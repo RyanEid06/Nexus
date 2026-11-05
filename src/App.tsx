@@ -15,6 +15,16 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      if (isInput) return;
+
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && useAppStore.getState().project) {
         event.preventDefault();
         useAppStore.getState().setPage('search');

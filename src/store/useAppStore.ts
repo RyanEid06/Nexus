@@ -5,8 +5,10 @@ export type MapMode = '2d' | '3d';
 export type RelationshipFilterMode = 'hierarchy' | 'dependencies' | 'both';
 
 export interface HistoryEntry {
-  nodeId: string;
-  page?: AppPage;
+  nodeId: string | null;
+  page: AppPage;
+  previewFileId: string | null;
+  mapMode?: MapMode;
 }
 
 interface AppState {
@@ -48,7 +50,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   navigationHistory: [],
   historyIndex: -1,
 
-  setPage: (page) => set({ page }),
+  setPage: (page) => {
+    const state = get();
+    if (state.page === page) return;
+
+    const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
+    const lastEntry = currentHistory[currentHistory.length - 1];
+
+    let newHistory = currentHistory;
+    if (
+      !lastEntry ||
+      lastEntry.page !== page ||
+      lastEntry.nodeId !== state.selectedNodeId ||
+      lastEntry.previewFileId !== state.previewFileId
+    ) {
+      newHistory = [
+        ...currentHistory,
+        {
+          nodeId: state.selectedNodeId,
+          page,
+          previewFileId: state.previewFileId,
+          mapMode: state.mapMode,
+        },
+      ].slice(-MAX_HISTORY);
+    }
+
+    set({
+      page,
+      navigationHistory: newHistory,
+      historyIndex: newHistory.length - 1,
+    });
+  },
 
   setProject: (project) => {
     const rootId = project.nodes[0]?.id ?? null;
@@ -63,11 +95,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
-    const initialHistory = rootId ? [{ nodeId: rootId, page: 'graph' as AppPage }] : [];
+    const initialHistory: HistoryEntry[] = rootId
+      ? [{ nodeId: rootId, page: 'graph', previewFileId: null, mapMode: '2d' }]
+      : [];
 
     set({
       project,
       page: 'graph',
+      mapMode: '2d', // GEMINI.md Section 10: New/opened projects strictly default to 2D
       selectedNodeId: rootId,
       previewFileId: null,
       expandedNodeIds: initialExpanded,
@@ -81,6 +116,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project: null,
       selectedNodeId: null,
       previewFileId: null,
+      mapMode: '2d',
       expandedNodeIds: new Set(),
       navigationHistory: [],
       historyIndex: -1,
@@ -89,11 +125,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectNode: (selectedNodeId, recordHistory = true) => {
     const state = get();
-    if (!selectedNodeId) {
-      set({ selectedNodeId: null });
-      return;
-    }
-
     if (state.selectedNodeId === selectedNodeId) return;
 
     if (recordHistory) {
@@ -101,8 +132,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const lastEntry = currentHistory[currentHistory.length - 1];
 
       let newHistory = currentHistory;
-      if (!lastEntry || lastEntry.nodeId !== selectedNodeId) {
-        newHistory = [...currentHistory, { nodeId: selectedNodeId, page: state.page }].slice(-MAX_HISTORY);
+      if (
+        !lastEntry ||
+        lastEntry.nodeId !== selectedNodeId ||
+        lastEntry.page !== state.page ||
+        lastEntry.previewFileId !== state.previewFileId
+      ) {
+        newHistory = [
+          ...currentHistory,
+          {
+            nodeId: selectedNodeId,
+            page: state.page,
+            previewFileId: state.previewFileId,
+            mapMode: state.mapMode,
+          },
+        ].slice(-MAX_HISTORY);
       }
 
       set({
@@ -151,12 +195,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     const node = state.project?.nodes.find((n) => n.id === nodeId);
     if (!node || node.kind !== 'file') return;
 
-    // Record history
     const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
     const lastEntry = currentHistory[currentHistory.length - 1];
     let newHistory = currentHistory;
-    if (!lastEntry || lastEntry.nodeId !== nodeId) {
-      newHistory = [...currentHistory, { nodeId, page: state.page }].slice(-MAX_HISTORY);
+    if (
+      !lastEntry ||
+      lastEntry.nodeId !== nodeId ||
+      lastEntry.previewFileId !== nodeId ||
+      lastEntry.page !== state.page
+    ) {
+      newHistory = [
+        ...currentHistory,
+        {
+          nodeId,
+          page: state.page,
+          previewFileId: nodeId,
+          mapMode: state.mapMode,
+        },
+      ].slice(-MAX_HISTORY);
     }
 
     set({
@@ -167,7 +223,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  closeFileViewer: () => set({ previewFileId: null }),
+  closeFileViewer: () => {
+    const state = get();
+    if (!state.previewFileId) return;
+
+    const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
+    const newHistory = [
+      ...currentHistory,
+      {
+        nodeId: state.selectedNodeId,
+        page: state.page,
+        previewFileId: null,
+        mapMode: state.mapMode,
+      },
+    ].slice(-MAX_HISTORY);
+
+    set({
+      previewFileId: null,
+      navigationHistory: newHistory,
+      historyIndex: newHistory.length - 1,
+    });
+  },
 
   navigateBack: () => {
     const state = get();
@@ -178,6 +254,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
+          page: entry.page,
+          previewFileId: entry.previewFileId,
+          ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),
         });
       }
     }
@@ -192,6 +271,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
+          page: entry.page,
+          previewFileId: entry.previewFileId,
+          ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),
         });
       }
     }

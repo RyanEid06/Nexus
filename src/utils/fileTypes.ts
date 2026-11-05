@@ -63,3 +63,46 @@ export function compactBytes(bytes: number): string {
   while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
+
+export const APPROVED_DIR_COLORS: Record<string, string> = {
+  config: '#38BDF8', // Sky
+  docs: '#60A5FA', // Blue
+  packages: '#A855F7', // Purple
+  ai: '#2DD4BF', // Teal
+  data: '#6366F1', // Indigo
+  web: '#EC4899', // Pink
+  utils: '#F59E0B', // Amber
+  core: '#10B981', // Emerald
+  src: '#3B82F6', // Bright Blue
+  scripts: '#8B5CF6', // Violet
+  app: '#8B5CF6',
+  components: '#38BDF8',
+  services: '#10B981',
+  database: '#6366F1',
+  tests: '#F59E0B',
+  public: '#94A3B8',
+};
+
+export const CLUSTER_COLORS = [
+  '#38BDF8',
+  '#8B5CF6',
+  '#10B981',
+  '#F59E0B',
+  '#EC4899',
+  '#60A5FA',
+  '#2DD4BF',
+  '#6366F1',
+];
+
+export function getDirectoryColor(name: string): string {
+  const clean = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (APPROVED_DIR_COLORS[clean]) return APPROVED_DIR_COLORS[clean];
+  for (const [key, color] of Object.entries(APPROVED_DIR_COLORS)) {
+    if (clean.includes(key)) return color;
+  }
+  let hash = 0;
+  for (let i = 0; i < clean.length; i += 1) {
+    hash = (hash * 31 + clean.charCodeAt(i)) >>> 0;
+  }
+  return CLUSTER_COLORS[hash % CLUSTER_COLORS.length];
+}

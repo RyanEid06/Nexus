@@ -149,4 +149,24 @@ describe('File Preview Service', () => {
       /handle is not connected/
     );
   });
+
+  it('rejects uncurated demo files rather than fabricating fake source (GEMINI.md Section 16)', async () => {
+    const uncuratedDemoNode: ProjectNode = {
+      id: 'unreal-demo-file',
+      projectId: 'demo-atlas',
+      parentId: 'root',
+      name: 'Uncurated.ts',
+      path: 'src/Uncurated.ts',
+      kind: 'file',
+      sizeBytes: 150,
+      loc: 10,
+      depth: 1,
+      language: 'TypeScript',
+    };
+
+    await expect(readProjectFile(mockDemoProject, uncuratedDemoNode)).rejects.toThrow(
+      /Demo source content is not available/
+    );
+  });
 });
+

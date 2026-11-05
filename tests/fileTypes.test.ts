@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analysisCategoryFor, isAnalyzableText, isSensitiveTextFile, languageFor } from '../src/utils/fileTypes';
+import { analysisCategoryFor, getDirectoryColor, isAnalyzableText, isSensitiveTextFile, languageFor } from '../src/utils/fileTypes';
 
 describe('file type analysis rules', () => {
   it('recognizes extensionless developer files', () => {
@@ -13,5 +13,12 @@ describe('file type analysis rules', () => {
     expect(analysisCategoryFor('app/tsconfig.json', 'tsconfig.json')).toBe('configuration');
     expect(isSensitiveTextFile('.env.production')).toBe(true);
     expect(isSensitiveTextFile('release.keystore')).toBe(true);
+  });
+
+  it('provides consistent palette colors for directory categories', () => {
+    expect(getDirectoryColor('components')).toBe('#38BDF8');
+    expect(getDirectoryColor('src')).toBe('#3B82F6');
+    expect(getDirectoryColor('tests')).toBe('#F59E0B');
+    expect(getDirectoryColor('unknown_folder_xyz')).toBeDefined();
   });
 });

@@ -36,6 +36,12 @@ export function FileViewer() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const codeContainerRef = useRef<HTMLDivElement>(null);
+  const modalRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // Active dependency drawer state (null | 'imports' | 'importedBy')
+  const [activeDepDrawer, setActiveDepDrawer] = useState<'imports' | 'importedBy' | null>(null);
 
   const node = useMemo(() => {
     if (!project || !previewFileId) return null;
@@ -44,6 +50,55 @@ export function FileViewer() {
 
   const isMarkdown = node?.extension?.toLowerCase() === 'md' || node?.name.toLowerCase().endsWith('.md');
 
+  // Compute resolved Imports and Imported By relationships (GEMINI.md Section 15)
+  const { importedFiles, importedByFiles } = useMemo(() => {
+    if (!project || !node) return { importedFiles: [], importedByFiles: [] };
+
+    const pathToNode = new Map<string, (typeof project.nodes)[0]>();
+    for (const n of project.nodes) {
+      pathToNode.set(n.path, n);
+    }
+
+    const imports: Array<{ node: (typeof project.nodes)[0]; specifier: string }> = [];
+    const importedBy: Array<{ node: (typeof project.nodes)[0]; specifier: string }> = [];
+
+    if (project.dependencies?.edges) {
+      for (const edge of project.dependencies.edges) {
+        if (!edge.isExternal && edge.isResolved) {
+          const targetPath = edge.targetResolvedPath ?? edge.targetPath;
+          if (edge.sourcePath === node.path) {
+            const targetNode = pathToNode.get(targetPath);
+            if (targetNode && targetNode.id !== node.id) {
+              imports.push({ node: targetNode, specifier: edge.specifier });
+            }
+          } else if (targetPath === node.path) {
+            const sourceNode = pathToNode.get(edge.sourcePath);
+            if (sourceNode && sourceNode.id !== node.id) {
+              importedBy.push({ node: sourceNode, specifier: edge.specifier });
+            }
+          }
+        }
+      }
+    }
+
+    return { importedFiles: imports, importedByFiles: importedBy };
+  }, [project, node]);
+
+  // Save opener element on mount and restore on unmount (GEMINI.md Section 19)
+  useEffect(() => {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    return () => {
+      openerRef.current?.focus?.();
+    };
+  }, []);
+
+  // Initial focus on meaningful control
+  useEffect(() => {
+    if (previewFileId) {
+      setTimeout(() => closeButtonRef.current?.focus(), 50);
+    }
+  }, [previewFileId]);
+
   // Load file contents
   useEffect(() => {
     if (!project || !node) return;
@@ -51,6 +106,7 @@ export function FileViewer() {
     setLoading(true);
     setError(null);
     setData(null);
+    setActiveDepDrawer(null);
 
     readProjectFile(project, node)
       .then((res) => {
@@ -74,24 +130,43 @@ export function FileViewer() {
     };
   }, [project, node, isMarkdown]);
 
-  // Keyboard shortcut listener (Escape to close, Ctrl+F for search)
+  // Keyboard shortcut listener (Escape to close, Ctrl+F for search, Focus Trap)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (isSearchOpen) {
+        if (activeDepDrawer) {
+          setActiveDepDrawer(null);
+        } else if (isSearchOpen) {
           setIsSearchOpen(false);
         } else {
           closeFileViewer();
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
+        e.stopPropagation();
         setIsSearchOpen(true);
         setTimeout(() => searchInputRef.current?.focus(), 50);
+      } else if (e.key === 'Tab' && modalRef.current) {
+        // Focus trap inside modal
+        const focusables = modalRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isSearchOpen, closeFileViewer]);
+  }, [isSearchOpen, closeFileViewer, activeDepDrawer]);
 
   // Calculate search matches across lines
   const lines = useMemo(() => (data ? data.content.split('\n') : []), [data]);
@@ -148,11 +223,21 @@ export function FileViewer() {
     closeFileViewer();
   };
 
-  if (!previewFileId || !node) return null;
+  const handleNavigateToNode = (targetId: string) => {
+    useAppStore.getState().openFileViewer(targetId);
+  };
+
+    if (!previewFileId || !node) return null;
 
   return (
     <div className="file-viewer-backdrop" onClick={(e) => { if (e.target === e.currentTarget) closeFileViewer(); }}>
-      <section className="file-viewer-modal" role="dialog" aria-modal="true" aria-label={`Preview ${node.name}`}>
+      <section
+        ref={modalRef}
+        className="file-viewer-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Preview ${node.name}`}
+      >
         {/* Top Header */}
         <header className="file-viewer-header">
           <div className="file-info-group">
@@ -171,6 +256,33 @@ export function FileViewer() {
           </div>
 
           <div className="file-actions-group">
+            {/* Dependency Navigation Shortcuts (GEMINI.md Section 15) */}
+            <div className="file-dep-shortcuts">
+              <button
+                className={`dep-nav-btn ${activeDepDrawer === 'imports' ? 'active' : ''}`}
+                title={`View ${importedFiles.length} imports`}
+                aria-label={`View ${importedFiles.length} imports`}
+                aria-expanded={activeDepDrawer === 'imports'}
+                disabled={importedFiles.length === 0}
+                onClick={() => setActiveDepDrawer(activeDepDrawer === 'imports' ? null : 'imports')}
+              >
+                <span>Imports</span>
+                <b>{importedFiles.length}</b>
+              </button>
+
+              <button
+                className={`dep-nav-btn ${activeDepDrawer === 'importedBy' ? 'active' : ''}`}
+                title={`View ${importedByFiles.length} files importing this module`}
+                aria-label={`View ${importedByFiles.length} files importing this module`}
+                aria-expanded={activeDepDrawer === 'importedBy'}
+                disabled={importedByFiles.length === 0}
+                onClick={() => setActiveDepDrawer(activeDepDrawer === 'importedBy' ? null : 'importedBy')}
+              >
+                <span>Imported By</span>
+                <b>{importedByFiles.length}</b>
+              </button>
+            </div>
+
             {isMarkdown && data && (
               <div className="view-toggle-pill">
                 <button
@@ -225,6 +337,7 @@ export function FileViewer() {
             </button>
 
             <button
+              ref={closeButtonRef}
               className="ghost small close-btn"
               title="Close viewer (Escape)"
               aria-label="Close viewer"
@@ -234,6 +347,43 @@ export function FileViewer() {
             </button>
           </div>
         </header>
+
+        {/* Dependency Navigation Dropdown / Drawer */}
+        {activeDepDrawer && (
+          <div className="file-dep-drawer" role="region" aria-label="Dependencies list">
+            <div className="dep-drawer-header">
+              <span>
+                {activeDepDrawer === 'imports'
+                  ? `Modules imported by ${node.name} (${importedFiles.length})`
+                  : `Modules importing ${node.name} (${importedByFiles.length})`}
+              </span>
+              <button
+                className="clear-btn"
+                aria-label="Close dependency drawer"
+                onClick={() => setActiveDepDrawer(null)}
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <div className="dep-drawer-list">
+              {(activeDepDrawer === 'imports' ? importedFiles : importedByFiles).map((item) => (
+                <button
+                  key={item.node.id}
+                  className="dep-drawer-item"
+                  onClick={() => {
+                    handleNavigateToNode(item.node.id);
+                  }}
+                  title={`Open ${item.node.path}`}
+                >
+                  <FileCode2 size={13} className="dep-file-icon" />
+                  <span className="dep-file-name">{item.node.name}</span>
+                  <small className="dep-file-path">{item.node.path}</small>
+                  {item.specifier && <code className="dep-specifier">{item.specifier}</code>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* In-File Search Bar */}
         {isSearchOpen && activeTab === 'source' && (

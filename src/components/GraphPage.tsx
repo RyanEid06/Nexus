@@ -78,12 +78,13 @@ export function GraphPage() {
             </div>
           </div>
 
-          {/* Active Graph Canvas */}
-          {mapMode === '2d' ? (
+          {/* Active Graph Canvas (Persisted to preserve WebGL context & avoid React 19 unmount collisions) */}
+          <div className={`graph-canvas transition-opacity duration-200 ${mapMode === '2d' ? 'opacity-100' : 'pointer-events-none opacity-0 invisible'}`}>
             <ProjectGraph2D relationshipMode={relationshipMode} />
-          ) : (
+          </div>
+          <div className={`graph-canvas transition-opacity duration-200 ${mapMode === '3d' ? 'opacity-100' : 'pointer-events-none opacity-0 invisible'}`}>
             <ProjectGraph relationshipMode={relationshipMode} />
-          )}
+          </div>
 
           {/* Bottom Left Navigation Hint */}
           <div className="graph-help">

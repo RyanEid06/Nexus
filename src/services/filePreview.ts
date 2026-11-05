@@ -303,15 +303,11 @@ export async function readProjectFile(
         isTruncated: false,
       };
     }
-    // Fallback template for any unspecified demo file
-    return {
-      content: `// ${node.name}\n// Path: ${normalizedPath}\n// Language: ${node.language ?? 'Unknown'}\n\n// Demo source code preview for ${node.name}\nexport default function ${node.name.replace(/\.[^/.]+$/, '')}() {\n  return null;\n}\n`,
-      path: normalizedPath,
-      name: node.name,
-      sizeBytes: node.sizeBytes,
-      language: node.language,
-      isTruncated: false,
-    };
+    // GEMINI.md Section 16: Never fabricate synthetic source code for uncurated demo files
+    throw new FilePreviewError(
+      `Demo source content is not available for "${node.name}". Only curated demo files are previewable in offline demo mode.`,
+      'FILE_NOT_FOUND'
+    );
   }
 
   // 7. Local Project File Access

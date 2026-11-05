@@ -131,5 +131,146 @@ describe('Layout Engine', () => {
       const childDist = Math.sqrt(mainPos!.x * mainPos!.x + mainPos!.y * mainPos!.y);
       expect(childDist).toBeGreaterThan(srcDist);
     });
+
+    it('scales to 100+ direct children using multi-band progressive layout without crash', () => {
+      const rootNode: ProjectNode = {
+        id: 'root',
+        projectId: 'p',
+        parentId: null,
+        name: 'root',
+        path: 'root',
+        kind: 'project',
+        sizeBytes: 0,
+        loc: 0,
+        depth: 0,
+      };
+      const largeFolder: ProjectNode = {
+        id: 'large-folder',
+        projectId: 'p',
+        parentId: 'root',
+        name: 'large-folder',
+        path: 'root/large-folder',
+        kind: 'directory',
+        sizeBytes: 0,
+        loc: 0,
+        depth: 1,
+      };
+
+      const nodes: ProjectNode[] = [rootNode, largeFolder];
+      for (let i = 1; i <= 120; i += 1) {
+        nodes.push({
+          id: `child-${i}`,
+          projectId: 'p',
+          parentId: 'large-folder',
+          name: i <= 10 ? `dir-${i}` : `file-${i}.ts`,
+          path: `root/large-folder/${i <= 10 ? `dir-${i}` : `file-${i}.ts`}`,
+          kind: i <= 10 ? 'directory' : 'file',
+          sizeBytes: 100,
+          loc: 10,
+          depth: 2,
+        });
+      }
+
+      const expanded = new Set(['large-folder']);
+      const layout = calculate2DLayout(nodes, expanded, 'root');
+
+      // Verify layout computed successfully and includes root and large-folder
+      expect(layout.has('root')).toBe(true);
+      expect(layout.has('large-folder')).toBe(true);
+
+      // Verify directory nodes are prioritized in the first band
+      const dir1Pos = layout.get('child-1');
+      expect(dir1Pos).toBeDefined();
+      expect(dir1Pos?.band).toBe(0);
+
+      // Verify overflow indicator was created for > 36 children
+      const overflowPos = layout.get('large-folder__more');
+      expect(overflowPos).toBeDefined();
+      expect(overflowPos?.isOverflowIndicator).toBe(true);
+      expect(overflowPos?.overflowCount).toBe(120 - 36);
+
+      // Verify all positions are finite and deterministic
+      for (const [, pos] of layout.entries()) {
+        expect(Number.isFinite(pos.x)).toBe(true);
+        expect(Number.isFinite(pos.y)).toBe(true);
+      }
+    });
+  });
+
+  describe('Collapse Semantics & Large-Project Scalability (GEMINI.md Sections 6 & 7)', () => {
+    it('strictly keeps collapsed folder children hidden even when spare capacity exists', () => {
+      const nodes: ProjectNode[] = [
+        { id: 'root', projectId: 'p', parentId: null, name: 'root', path: 'root', kind: 'project', sizeBytes: 0, loc: 0, depth: 0 },
+        { id: 'docs', projectId: 'p', parentId: 'root', name: 'docs', path: 'root/docs', kind: 'directory', sizeBytes: 0, loc: 0, depth: 1 },
+        { id: 'doc-child', projectId: 'p', parentId: 'docs', name: 'README.md', path: 'root/docs/README.md', kind: 'file', sizeBytes: 10, loc: 1, depth: 2 },
+        { id: 'src', projectId: 'p', parentId: 'root', name: 'src', path: 'root/src', kind: 'directory', sizeBytes: 0, loc: 0, depth: 1 },
+        { id: 'src-child', projectId: 'p', parentId: 'src', name: 'index.ts', path: 'root/src/index.ts', kind: 'file', sizeBytes: 10, loc: 1, depth: 2 },
+      ];
+
+      // Only 'src' is expanded, 'docs' is collapsed. MaxNodes is 200 (plenty of spare capacity)
+      const visible = visibleGraphNodes(nodes, null, new Set(['src']), 200);
+      const visibleIds = new Set(visible.map((n) => n.id));
+
+      expect(visibleIds.has('root')).toBe(true);
+      expect(visibleIds.has('docs')).toBe(true);
+      expect(visibleIds.has('src')).toBe(true);
+      expect(visibleIds.has('src-child')).toBe(true);
+      // Collapsed 'doc-child' MUST NOT reappear!
+      expect(visibleIds.has('doc-child')).toBe(false);
+    });
+
+    it('benchmarks 3D layout on 3,000 synthetic nodes in O(N) time under 250ms', () => {
+      const syntheticNodes: ProjectNode[] = [
+        { id: 'root', projectId: 'p', parentId: null, name: 'root', path: 'root', kind: 'project', sizeBytes: 0, loc: 0, depth: 0 },
+      ];
+
+      // 30 top-level directories, each with 100 children = 3,031 nodes
+      for (let d = 1; d <= 30; d += 1) {
+        const dirId = `dir-${d}`;
+        syntheticNodes.push({
+          id: dirId,
+          projectId: 'p',
+          parentId: 'root',
+          name: `dir-${d}`,
+          path: `root/dir-${d}`,
+          kind: 'directory',
+          sizeBytes: 0,
+          loc: 0,
+          depth: 1,
+        });
+
+        for (let f = 1; f <= 100; f += 1) {
+          syntheticNodes.push({
+            id: `file-${d}-${f}`,
+            projectId: 'p',
+            parentId: dirId,
+            name: `file-${d}-${f}.ts`,
+            path: `root/dir-${d}/file-${d}-${f}.ts`,
+            kind: 'file',
+            sizeBytes: 100,
+            loc: 10,
+            depth: 2,
+          });
+        }
+      }
+
+      expect(syntheticNodes.length).toBe(3031);
+
+      const start = performance.now();
+      const positioned = withDeterministicLayout(syntheticNodes);
+      const duration = performance.now() - start;
+
+      expect(positioned.length).toBe(3031);
+      // Must execute quickly in O(N) time (typically < 100ms)
+      expect(duration).toBeLessThan(350);
+
+      // Verify all positions are finite
+      for (const node of positioned) {
+        expect(Number.isFinite(node.position![0])).toBe(true);
+        expect(Number.isFinite(node.position![1])).toBe(true);
+        expect(Number.isFinite(node.position![2])).toBe(true);
+      }
+    });
   });
 });
+

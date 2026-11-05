@@ -117,4 +117,62 @@ describe('App Store & Graph State', () => {
     useAppStore.getState().closeFileViewer();
     expect(useAppStore.getState().previewFileId).toBeNull();
   });
+
+  it('strictly defaults to 2D when opening a new project even if previous project was in 3D (GEMINI.md Section 10)', () => {
+    // Project 1
+    useAppStore.getState().setProject(mockProject);
+    useAppStore.getState().setMapMode('3d');
+    expect(useAppStore.getState().mapMode).toBe('3d');
+
+    // Project 2 opened
+    const secondProject: ProjectIndex = {
+      ...mockProject,
+      id: 'project-2',
+      name: 'Project 2',
+    };
+    useAppStore.getState().setProject(secondProject);
+
+    // Must reset to 2D
+    expect(useAppStore.getState().mapMode).toBe('2d');
+  });
+
+  it('restores full exploration context: page, file viewer, and selection on Back/Forward (GEMINI.md Section 9)', () => {
+    useAppStore.getState().setProject(mockProject);
+    expect(useAppStore.getState().page).toBe('graph');
+    expect(useAppStore.getState().selectedNodeId).toBe('root');
+
+    // 1. Go to search
+    useAppStore.getState().setPage('search');
+    expect(useAppStore.getState().page).toBe('search');
+
+    // 2. Open file f1
+    useAppStore.getState().openFileViewer('f1');
+    expect(useAppStore.getState().previewFileId).toBe('f1');
+    expect(useAppStore.getState().selectedNodeId).toBe('f1');
+
+    // 3. Close file viewer and return to graph
+    useAppStore.getState().closeFileViewer();
+    useAppStore.getState().setPage('graph');
+    useAppStore.getState().selectNode('src');
+    expect(useAppStore.getState().selectedNodeId).toBe('src');
+    expect(useAppStore.getState().page).toBe('graph');
+
+    // 4. Navigate Back: should step back through graph page change, close viewer, to open f1
+    useAppStore.getState().navigateBack(); // index 4: f1 on graph (viewer closed)
+    useAppStore.getState().navigateBack(); // index 3: f1 on search (viewer closed)
+    useAppStore.getState().navigateBack(); // index 2: f1 on search with file viewer open
+    expect(useAppStore.getState().previewFileId).toBe('f1');
+    expect(useAppStore.getState().selectedNodeId).toBe('f1');
+
+    // 5. Navigate Back again: should return to search page before f1 was opened
+    useAppStore.getState().navigateBack();
+    expect(useAppStore.getState().page).toBe('search');
+    expect(useAppStore.getState().previewFileId).toBeNull();
+
+    // 6. Navigate Forward: returns to f1 preview
+    useAppStore.getState().navigateForward();
+    expect(useAppStore.getState().previewFileId).toBe('f1');
+    expect(useAppStore.getState().selectedNodeId).toBe('f1');
+  });
 });
+

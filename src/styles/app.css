@@ -659,70 +659,76 @@
   z-index: 2;
 }
 
-/* 2D Central Project Root Node */
+/* 2D Central Project Root Node (Matching 2D_APPROVED.png) */
 .node-2d-root {
   position: absolute;
-  width: 130px;
-  height: 130px;
-  margin-left: -65px;
-  margin-top: -65px;
+  width: 140px;
+  height: 140px;
+  margin-left: -70px;
+  margin-top: -70px;
   border-radius: 999px;
-  background: radial-gradient(circle, #251B47 0%, #15112B 75%, #0F0D1F 100%);
+  background: radial-gradient(circle, #2E1065 0%, #171233 65%, #0B0A16 100%);
   border: 2px solid #8B5CF6;
-  box-shadow: 0 0 35px rgba(139, 92, 246, 0.45), inset 0 0 25px rgba(139, 92, 246, 0.25);
+  box-shadow: 0 0 50px rgba(139, 92, 246, 0.55), inset 0 0 30px rgba(139, 92, 246, 0.35);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   z-index: 10;
 }
 .node-2d-root:hover,
 .node-2d-root.selected {
   transform: scale(1.06);
-  border-color: #A78BFA;
-  box-shadow: 0 0 50px rgba(139, 92, 246, 0.75), inset 0 0 30px rgba(139, 92, 246, 0.4);
+  border-color: #C4B5FD;
+  box-shadow: 0 0 65px rgba(139, 92, 246, 0.8), inset 0 0 35px rgba(139, 92, 246, 0.5);
 }
 .root-inner {
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
+}
+.root-glyph-box {
+  display: grid;
+  place-items: center;
+  margin-bottom: 3px;
+  filter: drop-shadow(0 0 10px rgba(167, 139, 250, 0.6));
 }
 .root-icon {
-  color: #C4B5FD;
-  margin-bottom: 2px;
+  color: #DDD6FE;
 }
 .root-title {
   font-size: 13px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   color: white;
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
 }
 .root-sub {
   font-size: 9px;
-  letter-spacing: 0.16em;
-  color: #9CA3AF;
-  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: #A78BFA;
+  font-weight: 700;
 }
 
-/* 2D Directory Capsule Node */
+/* 2D Directory Capsule Node (Matching 2D_APPROVED.png) */
 .node-2d-dir {
   position: absolute;
-  width: 140px;
+  width: 142px;
   height: 48px;
-  margin-left: -70px;
+  margin-left: -71px;
   margin-top: -24px;
-  border-radius: 12px;
-  background: rgba(17, 18, 27, 0.92);
-  backdrop-filter: blur(8px);
+  border-radius: 24px;
+  background: rgba(15, 16, 26, 0.94);
+  backdrop-filter: blur(10px);
   border: 1.5px solid #6366F1;
-  padding: 0 10px;
+  padding: 0 14px 0 12px;
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   z-index: 5;
 }
 .node-2d-dir:hover,
@@ -742,16 +748,18 @@
   flex: 1;
 }
 .dir-name {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: white;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: 0.02em;
 }
 .dir-count {
   font-size: 9px;
   color: #9CA3AF;
+  font-weight: 500;
 }
 .dir-expand-btn {
   background: transparent;
@@ -776,9 +784,9 @@
 /* 2D File Badge Node */
 .node-2d-file {
   position: absolute;
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
-  margin-top: -15px;
+  margin-top: -14px;
   border-radius: 8px;
   background: rgba(16, 17, 26, 0.94);
   backdrop-filter: blur(6px);
@@ -807,6 +815,34 @@
   font-size: 11px;
   color: #E2E8F0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 2D Progressive Disclosure Overflow Node */
+.node-2d-overflow-btn {
+  position: absolute;
+  height: 26px;
+  padding: 0 11px;
+  margin-top: -13px;
+  border-radius: 13px;
+  background: #151627;
+  border: 1px dashed #7C3AED;
+  color: #C4B5FD;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  z-index: 6;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+.node-2d-overflow-btn:hover {
+  background: #231E3D;
+  border-color: #A78BFA;
+  color: white;
+  transform: scale(1.06);
 }
 
 /* Map Filter Bar */
@@ -1061,6 +1097,123 @@
 }
 .file-actions-group .close-btn {
   margin-left: 6px;
+}
+
+/* File Viewer Dependency Navigation Shortcuts (GEMINI.md Section 15) */
+.file-dep-shortcuts {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.dep-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #151624;
+  border: 1px solid #2B2E42;
+  color: #CBD5E1;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.dep-nav-btn:hover:not(:disabled) {
+  background: #1E2034;
+  border-color: #8B5CF6;
+  color: white;
+}
+.dep-nav-btn.active {
+  background: #2D2250;
+  border-color: #A78BFA;
+  color: #DDD6FE;
+}
+.dep-nav-btn b {
+  font-size: 10px;
+  background: #25283C;
+  color: #A78BFA;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.dep-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.file-dep-drawer {
+  background: #0E101B;
+  border-bottom: 1px solid #24273C;
+  padding: 10px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  animation: slideDown 0.15s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dep-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #A78BFA;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dep-drawer-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 6px;
+}
+.dep-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #141624;
+  border: 1px solid #25283E;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: #E2E8F0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: all 0.12s ease;
+}
+.dep-drawer-item:hover {
+  background: #1D2036;
+  border-color: #8B5CF6;
+  color: white;
+}
+.dep-file-icon {
+  color: #A78BFA;
+  flex: 0 0 auto;
+}
+.dep-file-name {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dep-file-path {
+  font-size: 10px;
+  color: #8E92A5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.dep-specifier {
+  font-size: 9px;
+  color: #93C5FD;
+  background: #1B2138;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex: 0 0 auto;
 }
 
 .file-search-bar {
