@@ -6,8 +6,8 @@ import {
   FolderOpen,
   Layers,
 } from 'lucide-react';
-import type { DependencyEdge, ProjectNode } from '../domain/models';
-import { calculate2DLayout, type Node2DPosition } from '../services/layout';
+import type { Node2DPosition } from '../services/layout';
+import { computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor } from '../utils/fileTypes';
 
@@ -23,12 +23,12 @@ const DETERMINISTIC_STARS = Array.from({ length: STAR_COUNT }, (_, i) => {
 });
 
 interface ProjectGraph2DProps {
+  active?: boolean;
   relationshipMode?: RelationshipFilterMode;
-  onFitRequest?: () => void;
-  onFocusRequest?: (nodeId: string) => void;
 }
 
 export function ProjectGraph2D({
+  active = true,
   relationshipMode = 'hierarchy',
 }: ProjectGraph2DProps) {
   const project = useAppStore((s) => s.project);
@@ -38,6 +38,8 @@ export function ProjectGraph2D({
   const setPage = useAppStore((s) => s.setPage);
   const expandedNodeIds = useAppStore((s) => s.expandedNodeIds);
   const toggleExpandNode = useAppStore((s) => s.toggleExpandNode);
+  const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
+  const drillDownNode = useAppStore((s) => s.drillDownNode);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -70,176 +72,127 @@ export function ProjectGraph2D({
     }
   }, []);
 
-  const allById = useMemo(
-    () => new Map((project?.nodes ?? []).map((node) => [node.id, node])),
-    [project]
-  );
+  // Compute unified graph viewport
+  const viewport = useMemo(() => {
+    if (!project) return null;
+    return computeGraphViewport({
+      project,
+      mapFocusNodeId,
+      selectedNodeId: selectedId,
+      expandedNodeIds,
+      relationshipMode,
+      hoveredNodeId,
+    });
+  }, [project, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode, hoveredNodeId]);
 
-  // Calculate 2D positions deterministically matching 2D_APPROVED.png
-  const layout = useMemo(() => {
-    if (!project) return new Map<string, Node2DPosition>();
-    return calculate2DLayout(project.nodes, expandedNodeIds, project.nodes[0]?.id);
-  }, [project, expandedNodeIds]);
-
-  // Visible nodes in 2D
-  const visibleNodes = useMemo(() => {
-    if (!project) return [];
-    const list: ProjectNode[] = [];
-    for (const node of project.nodes) {
-      if (layout.has(node.id)) {
-        list.push(node);
-      }
-    }
-    return list;
-  }, [project, layout]);
-
-  // Overflow indicator positions (for > 36 direct children)
-  const overflowEntries = useMemo(() => {
-    const list: Array<{ parentId: string; pos: Node2DPosition }> = [];
-    for (const [id, pos] of layout.entries()) {
-      if (pos.isOverflowIndicator) {
-        list.push({ parentId: id.replace('__more', ''), pos });
-      }
-    }
-    return list;
-  }, [layout]);
+  const layout = useMemo(() => viewport?.positions2D ?? new Map<string, Node2DPosition>(), [viewport]);
+  const visibleNodes = useMemo(() => viewport?.visibleNodes ?? [], [viewport]);
+  const overflowNodes = useMemo(() => viewport?.overflowNodes ?? [], [viewport]);
 
   // Edges calculation with clean origin points
-  const { hierarchyEdges, dependencyEdges } = useMemo(() => {
-    const hier: Array<{
+  const hierarchyEdges = useMemo(() => {
+    if (!viewport || !project) return [];
+    const list: Array<{
       id: string;
-      source: ProjectNode;
-      target: ProjectNode;
-      sourcePos: Node2DPosition;
-      targetPos: Node2DPosition;
+      sourceId: string;
+      targetId: string;
+      isOverflow: boolean;
       pathD: string;
+      targetKind: string;
+      targetName: string;
     }> = [];
-    const dep: Array<{ edge: DependencyEdge; sourcePos: Node2DPosition; targetPos: Node2DPosition; pathD: string }> = [];
 
-    if (!project) return { hierarchyEdges: hier, dependencyEdges: dep };
+    for (const edge of viewport.hierarchyEdges) {
+      const sPos = viewport.positions2D.get(edge.sourceId);
+      const tPos = viewport.positions2D.get(edge.targetId);
+      const sNode = viewport.visibleNodesMap.get(edge.sourceId);
+      const tNode = edge.isOverflow ? null : viewport.visibleNodesMap.get(edge.targetId);
 
-    // Hierarchy edges
-    for (const node of visibleNodes) {
-      if (node.parentId && layout.has(node.parentId) && layout.has(node.id)) {
-        const parent = allById.get(node.parentId);
-        if (parent) {
-          const sPos = layout.get(parent.id)!;
-          const tPos = layout.get(node.id)!;
+      if (sPos && tPos && sNode) {
+        const angle = Math.atan2(tPos.y - sPos.y, tPos.x - sPos.x);
+        const sOffset = sNode.kind === 'project' ? 68 : 34;
+        const sx = sPos.x + Math.cos(angle) * sOffset;
+        const sy = sPos.y + Math.sin(angle) * (sNode.kind === 'project' ? sOffset : 22);
 
-          // Compute clean boundary offsets
-          const angle = Math.atan2(tPos.y - sPos.y, tPos.x - sPos.x);
-          const sOffset = parent.kind === 'project' ? 68 : 32;
-          const sx = sPos.x + Math.cos(angle) * sOffset;
-          const sy = sPos.y + Math.sin(angle) * (parent.kind === 'project' ? sOffset : 20);
-
-          let pathD = `M ${sx} ${sy} L ${tPos.x} ${tPos.y}`;
-          if (node.kind === 'file') {
-            // Smooth curved branch radiating out to file node
-            const midX = (sx + tPos.x) / 2;
-            const midY = (sy + tPos.y) / 2;
-            pathD = `M ${sx} ${sy} Q ${midX} ${midY} ${tPos.x} ${tPos.y}`;
-          }
-
-          hier.push({
-            id: `hier-${parent.id}-${node.id}`,
-            source: parent,
-            target: node,
-            sourcePos: sPos,
-            targetPos: tPos,
-            pathD,
-          });
+        let pathD = `M ${sx} ${sy} L ${tPos.x} ${tPos.y}`;
+        if (tNode && tNode.kind === 'file') {
+          const midX = (sx + tPos.x) / 2;
+          const midY = (sy + tPos.y) / 2;
+          pathD = `M ${sx} ${sy} Q ${midX} ${midY} ${tPos.x} ${tPos.y}`;
         }
+
+        list.push({
+          id: edge.id,
+          sourceId: edge.sourceId,
+          targetId: edge.targetId,
+          isOverflow: Boolean(edge.isOverflow),
+          pathD,
+          targetKind: tNode?.kind ?? 'overflow',
+          targetName: tNode?.name ?? '',
+        });
       }
     }
+    return list;
+  }, [viewport, project]);
 
-    // Dependency edges
-    if (project.dependencies?.edges) {
-      const pathToNode = new Map<string, ProjectNode>();
-      for (const n of project.nodes) {
-        pathToNode.set(n.path, n);
-      }
+  const dependencyEdges = useMemo(() => {
+    if (!viewport || !project) return [];
+    const list: Array<{ id: string; sourceId: string; targetId: string; pathD: string }> = [];
 
-      for (const edge of project.dependencies.edges) {
-        if (!edge.isExternal && edge.isResolved) {
-          const sNode = pathToNode.get(edge.sourcePath);
-          const tNode = pathToNode.get(edge.targetResolvedPath ?? edge.targetPath);
-          if (sNode && tNode && sNode.id !== tNode.id) {
-            let sVisibleId: string | null = sNode.id;
-            let tVisibleId: string | null = tNode.id;
+    for (const dep of viewport.visibleDependencyEdges) {
+      const sPos = viewport.positions2D.get(dep.sourceId);
+      const tPos = viewport.positions2D.get(dep.targetId);
+      if (sPos && tPos) {
+        const midX = (sPos.x + tPos.x) / 2;
+        const midY = (sPos.y + tPos.y) / 2;
+        const dist = Math.hypot(tPos.x - sPos.x, tPos.y - sPos.y);
+        const curveDist = Math.min(80, Math.max(30, dist * 0.22));
+        const angleFromCenter = Math.atan2(midY, midX);
+        const controlX = midX + Math.cos(angleFromCenter) * curveDist;
+        const controlY = midY + Math.sin(angleFromCenter) * curveDist;
 
-            let curS: ProjectNode | undefined = sNode;
-            while (curS && !layout.has(curS.id)) {
-              curS = curS.parentId ? allById.get(curS.parentId) : undefined;
-            }
-            if (curS && layout.has(curS.id)) sVisibleId = curS.id;
-
-            let curT: ProjectNode | undefined = tNode;
-            while (curT && !layout.has(curT.id)) {
-              curT = curT.parentId ? allById.get(curT.parentId) : undefined;
-            }
-            if (curT && layout.has(curT.id)) tVisibleId = curT.id;
-
-            if (sVisibleId && tVisibleId && sVisibleId !== tVisibleId) {
-              const sPos = layout.get(sVisibleId);
-              const tPos = layout.get(tVisibleId);
-              if (sPos && tPos) {
-                // Curved quadratic bezier arc
-                const midX = (sPos.x + tPos.x) / 2;
-                const midY = (sPos.y + tPos.y) / 2;
-                const dist = Math.hypot(tPos.x - sPos.x, tPos.y - sPos.y);
-                const curveDist = Math.min(80, Math.max(30, dist * 0.22));
-                const angleFromCenter = Math.atan2(midY, midX);
-                const controlX = midX + Math.cos(angleFromCenter) * curveDist;
-                const controlY = midY + Math.sin(angleFromCenter) * curveDist;
-
-                const pathD = `M ${sPos.x} ${sPos.y} Q ${controlX} ${controlY} ${tPos.x} ${tPos.y}`;
-                dep.push({ edge, sourcePos: sPos, targetPos: tPos, pathD });
-              }
-            }
-          }
-        }
+        const pathD = `M ${sPos.x} ${sPos.y} Q ${controlX} ${controlY} ${tPos.x} ${tPos.y}`;
+        list.push({ id: dep.id, sourceId: dep.sourceId, targetId: dep.targetId, pathD });
       }
     }
-
-    return { hierarchyEdges: hier, dependencyEdges: dep };
-  }, [project, visibleNodes, layout, allById]);
+    return list;
+  }, [viewport, project]);
 
   // Hover and selection relationship sets for visual highlighting
   const activeHighlightedIds = useMemo(() => {
     const targetId = hoveredNodeId ?? selectedId;
-    if (!targetId) return null;
+    if (!targetId || !viewport || !project) return null;
 
     const set = new Set<string>();
     set.add(targetId);
 
-    const node = allById.get(targetId);
+    const node = viewport.visibleNodesMap.get(targetId);
     if (node?.parentId) set.add(node.parentId);
 
-    // Add children
-    for (const item of visibleNodes) {
+    for (const item of viewport.visibleNodes) {
       if (item.parentId === targetId) set.add(item.id);
     }
 
-    // Add dependencies
-    if (node?.path && project?.dependencies?.edges) {
+    if (node?.path && project.dependencies?.edges) {
       for (const edge of project.dependencies.edges) {
         if (edge.sourcePath === node.path && edge.targetResolvedPath) {
           const tNode = project.nodes.find((n) => n.path === edge.targetResolvedPath);
-          if (tNode) set.add(tNode.id);
+          if (tNode && viewport.visibleNodesMap.has(tNode.id)) set.add(tNode.id);
         }
         if (edge.targetResolvedPath === node.path) {
           const sNode = project.nodes.find((n) => n.path === edge.sourcePath);
-          if (sNode) set.add(sNode.id);
+          if (sNode && viewport.visibleNodesMap.has(sNode.id)) set.add(sNode.id);
         }
       }
     }
 
     return set;
-  }, [hoveredNodeId, selectedId, allById, visibleNodes, project]);
+  }, [hoveredNodeId, selectedId, viewport, project]);
 
   // Mouse pan handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
+      if (!active) return;
       if (e.button !== 0 && e.button !== 1) return;
       setIsDragging(true);
       dragStartRef.current = {
@@ -249,12 +202,12 @@ export function ProjectGraph2D({
         startY: transform.y,
       };
     },
-    [transform.x, transform.y]
+    [active, transform.x, transform.y]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!isDragging) return;
+      if (!active || !isDragging) return;
       const dx = e.clientX - dragStartRef.current.mouseX;
       const dy = e.clientY - dragStartRef.current.mouseY;
       setTransform((prev) => ({
@@ -263,7 +216,7 @@ export function ProjectGraph2D({
         y: dragStartRef.current.startY + dy,
       }));
     },
-    [isDragging]
+    [active, isDragging]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -271,28 +224,32 @@ export function ProjectGraph2D({
   }, []);
 
   // Wheel zoom handler centered on cursor
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const container = containerRef.current;
-    if (!container) return;
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      if (!active) return;
+      e.preventDefault();
+      const container = containerRef.current;
+      if (!container) return;
 
-    const rect = container.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
 
-    const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
+      const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
 
-    setTransform((prev) => {
-      const nextK = Math.min(3.5, Math.max(0.18, prev.k * zoomFactor));
-      const nextX = mouseX - (mouseX - prev.x) * (nextK / prev.k);
-      const nextY = mouseY - (mouseY - prev.y) * (nextK / prev.k);
-      return { x: nextX, y: nextY, k: nextK };
-    });
-  }, []);
+      setTransform((prev) => {
+        const nextK = Math.min(3.5, Math.max(0.2, prev.k * zoomFactor));
+        const nextX = mouseX - (mouseX - prev.x) * (nextK / prev.k);
+        const nextY = mouseY - (mouseY - prev.y) * (nextK / prev.k);
+        return { x: nextX, y: nextY, k: nextK };
+      });
+    },
+    [active]
+  );
 
   // Bounding-box Fit View
   const fitMap = useCallback(() => {
-    if (!containerRef.current || !visibleNodes.length) return;
+    if (!containerRef.current || !viewport || !layout.size) return;
     const rect = containerRef.current.getBoundingClientRect();
 
     let minX = Infinity;
@@ -300,20 +257,20 @@ export function ProjectGraph2D({
     let minY = Infinity;
     let maxY = -Infinity;
 
-    for (const [, pos] of layout.entries()) {
-      minX = Math.min(minX, pos.x - 90);
-      maxX = Math.max(maxX, pos.x + 90);
-      minY = Math.min(minY, pos.y - 45);
-      maxY = Math.max(maxY, pos.y + 45);
+    for (const pos of layout.values()) {
+      minX = Math.min(minX, pos.x - 110);
+      maxX = Math.max(maxX, pos.x + 110);
+      minY = Math.min(minY, pos.y - 50);
+      maxY = Math.max(maxY, pos.y + 50);
     }
 
-    const width = maxX - minX || 600;
-    const height = maxY - minY || 600;
+    const width = Math.max(400, maxX - minX);
+    const height = Math.max(300, maxY - minY);
 
-    const padding = 80;
+    const padding = 70;
     const scaleX = (rect.width - padding * 2) / width;
     const scaleY = (rect.height - padding * 2) / height;
-    const nextK = Math.min(1.2, Math.max(0.25, Math.min(scaleX, scaleY)));
+    const nextK = Math.min(1.2, Math.max(0.35, Math.min(scaleX, scaleY)));
 
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
@@ -323,7 +280,7 @@ export function ProjectGraph2D({
       y: rect.height / 2 - centerY * nextK,
       k: nextK,
     });
-  }, [visibleNodes, layout]);
+  }, [viewport, layout]);
 
   const resetView = useCallback(() => {
     if (!containerRef.current) return;
@@ -351,19 +308,22 @@ export function ProjectGraph2D({
   );
 
   useEffect(() => {
-    const handleToolbarAction = (e: CustomEvent<{ action: string; nodeId?: string }>) => {
+    const handleToolbarAction = (e: CustomEvent<{ action: string; nodeId?: string; targetMode?: string }>) => {
+      if (!active) return;
+      if (e.detail.targetMode && e.detail.targetMode !== '2d') return;
       if (e.detail.action === 'fit') fitMap();
       if (e.detail.action === 'reset') resetView();
       if (e.detail.action === 'focus' && e.detail.nodeId) focusNode(e.detail.nodeId);
     };
     window.addEventListener('nexus:map-action' as any, handleToolbarAction as any);
     return () => window.removeEventListener('nexus:map-action' as any, handleToolbarAction as any);
-  }, [fitMap, resetView, focusNode]);
+  }, [active, fitMap, resetView, focusNode]);
 
-  if (!project) return null;
+  if (!project || !viewport) return null;
 
   const showHierarchy = relationshipMode === 'hierarchy' || relationshipMode === 'both';
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
+  const isLowLOD = transform.k < 0.6;
 
   return (
     <div
@@ -377,14 +337,12 @@ export function ProjectGraph2D({
     >
       <svg className="graph-svg-layer" width="100%" height="100%">
         <defs>
-          {/* Subtle star particle glow */}
           <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.9" />
             <stop offset="40%" stopColor="#A78BFA" stopOpacity="0.5" />
             <stop offset="100%" stopColor="#8B5CF6" stopOpacity="0" />
           </radialGradient>
 
-          {/* Central Root Multi-layered Violet Aura */}
           <radialGradient id="rootAura" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#8B5CF6" stopOpacity="0.45" />
             <stop offset="60%" stopColor="#6D28D9" stopOpacity="0.15" />
@@ -410,19 +368,19 @@ export function ProjectGraph2D({
             />
           ))}
 
-          {/* Central Root Halo Aura Ring */}
+          {/* Central Halo Aura Ring */}
           <circle cx={0} cy={0} r={115} fill="url(#rootAura)" />
           <circle cx={0} cy={0} r={80} fill="none" stroke="#8B5CF6" strokeWidth={1} strokeOpacity={0.25} />
 
           {/* Hierarchy Edges */}
           {showHierarchy &&
-            hierarchyEdges.map(({ id, source, target, pathD }) => {
+            hierarchyEdges.map(({ id, sourceId, targetId, isOverflow, pathD, targetKind, targetName }) => {
               const isHighlighted =
                 activeHighlightedIds &&
-                activeHighlightedIds.has(source.id) &&
-                activeHighlightedIds.has(target.id);
+                activeHighlightedIds.has(sourceId) &&
+                activeHighlightedIds.has(targetId);
               const isDimmed = activeHighlightedIds && !isHighlighted;
-              const dirColor = target.kind === 'directory' ? getDirectoryColor(target.name) : '#7C8BA1';
+              const dirColor = targetKind === 'directory' ? getDirectoryColor(targetName) : isOverflow ? '#6366F1' : '#7C8BA1';
 
               return (
                 <path
@@ -430,8 +388,9 @@ export function ProjectGraph2D({
                   d={pathD}
                   fill="none"
                   stroke={isHighlighted ? '#C4B5FD' : dirColor}
-                  strokeWidth={isHighlighted ? 2.2 : target.kind === 'directory' ? 1.5 : 1}
-                  strokeOpacity={isDimmed ? 0.15 : isHighlighted ? 0.95 : 0.45}
+                  strokeWidth={isHighlighted ? 2.2 : targetKind === 'directory' ? 1.5 : 1}
+                  strokeOpacity={isDimmed ? 0.12 : isHighlighted ? 0.95 : 0.45}
+                  strokeDasharray={isOverflow ? '3, 3' : undefined}
                   strokeLinecap="round"
                 />
               );
@@ -439,22 +398,30 @@ export function ProjectGraph2D({
 
           {/* Dependency Edges (Curved dashed lines) */}
           {showDependencies &&
-            dependencyEdges.map(({ edge, pathD }) => (
-              <path
-                key={`dep-${edge.id}`}
-                d={pathD}
-                fill="none"
-                stroke="#A855F7"
-                strokeWidth={1.5}
-                strokeDasharray="4, 4"
-                strokeOpacity={0.7}
-                filter="url(#softGlow)"
-              />
-            ))}
+            dependencyEdges.map(({ id, sourceId, targetId, pathD }) => {
+              const isHighlighted =
+                activeHighlightedIds &&
+                activeHighlightedIds.has(sourceId) &&
+                activeHighlightedIds.has(targetId);
+              const isDimmed = activeHighlightedIds && !isHighlighted;
+
+              return (
+                <path
+                  key={id}
+                  d={pathD}
+                  fill="none"
+                  stroke={isHighlighted ? '#F472B6' : '#A855F7'}
+                  strokeWidth={isHighlighted ? 2 : 1.4}
+                  strokeDasharray="4, 4"
+                  strokeOpacity={isDimmed ? 0.12 : isHighlighted ? 0.95 : 0.65}
+                  filter="url(#softGlow)"
+                />
+              );
+            })}
         </g>
       </svg>
 
-      {/* HTML Interactive Nodes Layer matching 2D_APPROVED.png */}
+      {/* HTML Interactive Nodes Layer */}
       <div
         className="graph-nodes-layer"
         style={{
@@ -468,34 +435,59 @@ export function ProjectGraph2D({
           const isSelected = node.id === selectedId;
           const isHovered = node.id === hoveredNodeId;
           const isExpanded = expandedNodeIds.has(node.id);
+          const isFocusedNode = node.id === viewport.focusNode.id;
 
-          // 1. Central Project Root Node (Layered cosmic hub with isometric 3-tier glyph)
-          if (node.kind === 'project') {
-            return (
-              <div
-                key={node.id}
-                className={`node-2d-root ${isSelected ? 'selected' : ''}`}
-                style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  selectNode(node.id);
-                }}
-                onMouseEnter={() => setHoveredNodeId(node.id)}
-                onMouseLeave={() => setHoveredNodeId(null)}
-              >
-                <div className="root-inner">
-                  {/* Isometric 3-Tier Diamond Mark */}
-                  <div className="root-glyph-box">
-                    <Layers size={28} className="root-icon" />
+          // 1. Central Focused Node
+          if (isFocusedNode) {
+            if (viewport.isProjectRootFocused) {
+              return (
+                <div
+                  key={node.id}
+                  className={`node-2d-root ${isSelected ? 'selected' : ''}`}
+                  style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    selectNode(node.id);
+                  }}
+                  onMouseEnter={() => setHoveredNodeId(node.id)}
+                  onMouseLeave={() => setHoveredNodeId(null)}
+                >
+                  <div className="root-inner">
+                    <div className="root-glyph-box">
+                      <Layers size={28} className="root-icon" />
+                    </div>
+                    <span className="root-title">{project.name.toUpperCase()}</span>
+                    <span className="root-sub">PROJECT</span>
                   </div>
-                  <span className="root-title">{project.name.toUpperCase()}</span>
-                  <span className="root-sub">PROJECT</span>
                 </div>
-              </div>
-            );
+              );
+            } else {
+              // Directory is focused as the central hub
+              const color = getDirectoryColor(node.name);
+              return (
+                <div
+                  key={node.id}
+                  className={`node-2d-focused-dir ${isSelected ? 'selected' : ''}`}
+                  style={{
+                    transform: `translate(${pos.x}px, ${pos.y}px)`,
+                    borderColor: isSelected ? '#DDD6FE' : color,
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    selectNode(node.id);
+                  }}
+                  onMouseEnter={() => setHoveredNodeId(node.id)}
+                  onMouseLeave={() => setHoveredNodeId(null)}
+                >
+                  <FolderOpen size={20} style={{ color }} />
+                  <span className="focused-dir-title">{node.name}/</span>
+                  <span className="focused-dir-sub">{node.descendantFiles ?? 0} FILES</span>
+                </div>
+              );
+            }
           }
 
-          // 2. Directory Hub Node (Rounded pill capsule matching 2D_APPROVED.png)
+          // 2. Directory Hub Node
           if (node.kind === 'directory') {
             const color = getDirectoryColor(node.name);
             const descendantCount = node.descendantFiles ?? 0;
@@ -517,19 +509,22 @@ export function ProjectGraph2D({
                 }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
-                  toggleExpandNode(node.id);
+                  drillDownNode(node.id);
                 }}
                 onMouseEnter={() => setHoveredNodeId(node.id)}
                 onMouseLeave={() => setHoveredNodeId(null)}
+                title={`${node.name}/ (${descendantCount} files) · Double-click to focus folder`}
               >
                 <div className="dir-icon-col" style={{ color }}>
                   {isExpanded ? <FolderOpen size={17} /> : <Folder size={17} />}
                 </div>
                 <div className="dir-text-col">
                   <span className="dir-name">{node.name}/</span>
-                  <span className="dir-count">
-                    {descendantCount} file{descendantCount === 1 ? '' : 's'}
-                  </span>
+                  {!isLowLOD && (
+                    <span className="dir-count">
+                      {descendantCount} file{descendantCount === 1 ? '' : 's'}
+                    </span>
+                  )}
                 </div>
                 <button
                   className={`dir-expand-btn ${isExpanded ? 'expanded' : ''}`}
@@ -546,11 +541,11 @@ export function ProjectGraph2D({
             );
           }
 
-          // 3. File Node (Compact dark chip card matching 2D_APPROVED.png)
+          // 3. File Node
           return (
             <div
               key={node.id}
-              className={`node-2d-file ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
+              className={`node-2d-file ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''} ${isLowLOD ? 'lod-low' : ''}`}
               style={{
                 transform: `translate(${pos.x}px, ${pos.y}px)`,
                 borderColor: isSelected ? '#A78BFA' : '#2A2C40',
@@ -573,22 +568,27 @@ export function ProjectGraph2D({
           );
         })}
 
-        {/* 4. Overflow Badges (+ N more files) */}
-        {overflowEntries.map(({ parentId, pos }) => (
-          <button
-            key={`overflow-${parentId}`}
-            className="node-2d-overflow-btn"
-            style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
-            onClick={(e) => {
-              e.stopPropagation();
-              selectNode(parentId);
-              setPage('structure');
-            }}
-            title={`View all ${pos.overflowCount} additional files in Structure`}
-          >
-            <span>+ {pos.overflowCount} more</span>
-          </button>
-        ))}
+        {/* 4. Overflow Badges (+ N more files/folders) */}
+        {overflowNodes.map((overflow: ViewportOverflowNode) => {
+          const pos = layout.get(overflow.id);
+          if (!pos) return null;
+
+          return (
+            <button
+              key={overflow.id}
+              className="node-2d-overflow-btn"
+              style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+              onClick={(e) => {
+                e.stopPropagation();
+                selectNode(overflow.parentId);
+                setPage('structure');
+              }}
+              title={`View all ${overflow.hiddenCount.toLocaleString()} additional items in Structure View`}
+            >
+              <span>{overflow.label}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

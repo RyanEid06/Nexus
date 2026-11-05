@@ -203,7 +203,7 @@ export function AnalyticsPage() {
               {connectedList.map(({ path, total, in: inCount, out: outCount }) => (
                 <div key={path} className="ranked-item" onClick={() => handleOpenPath(path)}>
                   <div className="ranked-item-info">
-                    <FileCode2 size={13} className="text-purple-400" />
+                    <FileCode2 size={13} className="icon-purple" />
                     <span title={path}>{path}</span>
                   </div>
                   <div className="ranked-item-meta">
@@ -230,7 +230,7 @@ export function AnalyticsPage() {
               {fanInList.map(([path, count]) => (
                 <div key={path} className="ranked-item" onClick={() => handleOpenPath(path)}>
                   <div className="ranked-item-info">
-                    <FileCode2 size={13} className="text-cyan-400" />
+                    <FileCode2 size={13} className="icon-cyan" />
                     <span title={path}>{path}</span>
                   </div>
                   <div className="ranked-item-meta">
@@ -256,7 +256,7 @@ export function AnalyticsPage() {
               {fanOutList.map(([path, count]) => (
                 <div key={path} className="ranked-item" onClick={() => handleOpenPath(path)}>
                   <div className="ranked-item-info">
-                    <FileCode2 size={13} className="text-indigo-400" />
+                    <FileCode2 size={13} className="icon-indigo" />
                     <span title={path}>{path}</span>
                   </div>
                   <div className="ranked-item-meta">
@@ -290,7 +290,7 @@ export function AnalyticsPage() {
                   }}
                 >
                   <div className="ranked-item-info">
-                    <Folder size={13} className="text-amber-400" />
+                    <Folder size={13} className="icon-warning" />
                     <span title={folder.path}>{folder.path}/</span>
                   </div>
                   <div className="ranked-item-meta">
@@ -305,7 +305,7 @@ export function AnalyticsPage() {
           {/* Unresolved Import Hotspots or Circular Dependencies */}
           {circularCycles.length > 0 ? (
             <article className="panel">
-              <h2 className="text-amber-400 flex items-center gap-2">
+              <h2 className="warning-heading">
                 <AlertTriangle size={15} /> Circular Dependency Hotspots
               </h2>
               <div className="ranked-list">
@@ -320,7 +320,7 @@ export function AnalyticsPage() {
                     }}
                   >
                     <div className="ranked-item-info">
-                      <RefreshCw size={13} className="text-amber-400" />
+                      <RefreshCw size={13} className="icon-warning" />
                       <span>Group #{idx + 1}: {cycle.slice(0, 2).map((p) => p.split('/').pop()).join(' ↔ ')}{cycle.length > 2 ? ` (+${cycle.length - 2} more)` : ''}</span>
                     </div>
                     <div className="ranked-item-meta">
@@ -337,7 +337,7 @@ export function AnalyticsPage() {
                 {unresolvedList.map(([path, count]) => (
                   <div key={path} className="ranked-item" onClick={() => handleOpenPath(path)}>
                     <div className="ranked-item-info">
-                      <AlertTriangle size={13} className="text-amber-400" />
+                      <AlertTriangle size={13} className="icon-warning" />
                       <span title={path}>{path}</span>
                     </div>
                     <div className="ranked-item-meta">

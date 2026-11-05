@@ -14,6 +14,7 @@ import {
   type ProjectIndex,
   type ProjectNode,
   type RawSpecifier,
+  type ScanProgress,
   type ScanWarning,
 } from '../domain/models';
 import { aggregateDirectoryStats, calculateMetrics } from './metrics';
@@ -23,6 +24,63 @@ import { withDeterministicLayout } from './layout';
 import { parseTsConfigAliases, type TsConfigAliases } from '../utils/jsonc';
 import { workerBridge } from './workerClient';
 import type { BatchItem } from './analysisEngine';
+
+export type { ScanProgress };
+
+export class ProgressScheduler {
+  private lastEmitTime = -Infinity;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private latestState: ScanProgress | null = null;
+  private isDone = false;
+
+  constructor(
+    private readonly onProgress?: (p: ScanProgress) => void,
+    private readonly minIntervalMs = 100 // ~10 UI updates per second
+  ) {}
+
+  update(progress: ScanProgress) {
+    this.latestState = progress;
+    if (this.isDone || !this.onProgress) return;
+
+    const now = performance.now();
+    const elapsed = now - this.lastEmitTime;
+
+    if (elapsed >= this.minIntervalMs) {
+      this.lastEmitTime = now;
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.onProgress(this.latestState);
+    } else if (!this.timer) {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.lastEmitTime = performance.now();
+        if (this.latestState && !this.isDone) {
+          this.onProgress?.(this.latestState);
+        }
+      }, this.minIntervalMs - elapsed);
+    }
+  }
+
+  flush() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.latestState && this.onProgress && !this.isDone) {
+      this.onProgress(this.latestState);
+    }
+  }
+
+  cancel() {
+    this.isDone = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+}
 
 interface DirectoryEntryHandle {
   kind: 'file' | 'directory';
@@ -42,20 +100,13 @@ export interface LocalDirectoryHandle extends DirectoryEntryHandle {
   requestPermission?: (descriptor?: { mode?: 'read' }) => Promise<'granted' | 'denied' | 'prompt'>;
 }
 
-export interface ScanProgress {
-  discovered: number;
-  analyzed: number;
-  reused: number;
-  warnings: number;
-  currentPath: string;
-}
-
 export interface ScanOptions {
   projectId?: string;
   createdAt?: number;
   maxTextFileBytes?: number;
   maxEntries?: number;
   analyzeCategories?: ReadonlySet<AnalysisCategory>;
+  customExclusions?: string[];
   signal?: AbortSignal;
   onProgress?: (progress: ScanProgress) => void;
   previousProject?: ProjectIndex;
@@ -100,290 +151,361 @@ export async function pickLocalProjectDirectory(): Promise<LocalDirectoryHandle>
 export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options: ScanOptions = {}): Promise<ProjectIndex> {
   const previousProject = options.previousProject;
   const projectId = options.projectId ?? previousProject?.id ?? newProjectId();
+  const scheduler = new ProgressScheduler(options.onProgress);
 
-  // Honor persisted analysis configuration from previous project when not explicitly overridden
-  const prevConfig = previousProject?.analysisConfig;
-  const effectiveCategories: ReadonlySet<AnalysisCategory> =
-    options.analyzeCategories !== undefined
-      ? options.analyzeCategories
-      : prevConfig?.selectedCategories
-      ? new Set<AnalysisCategory>(prevConfig.selectedCategories)
-      : new Set<AnalysisCategory>(['source', 'configuration', 'documentation', 'test']);
+  try {
+    // Honor persisted analysis configuration from previous project when not explicitly overridden
+    const prevConfig = previousProject?.analysisConfig;
+    const effectiveCategories: ReadonlySet<AnalysisCategory> =
+      options.analyzeCategories !== undefined
+        ? options.analyzeCategories
+        : prevConfig?.selectedCategories
+        ? new Set<AnalysisCategory>(prevConfig.selectedCategories)
+        : new Set<AnalysisCategory>(['source', 'configuration', 'documentation', 'test']);
 
-  const maxTextFileBytes = options.maxTextFileBytes ?? prevConfig?.maxTextFileBytes ?? 2 * 1024 * 1024;
-  const maxEntries = options.maxEntries ?? prevConfig?.maxEntries ?? 50_000;
+    const customExclusions = new Set<string>(
+      options.customExclusions ?? prevConfig?.customExcludedPaths ?? []
+    );
 
-  const nodes: ProjectNode[] = [];
-  const warnings: ScanWarning[] = [];
-  let discovered = 0;
-  let analyzed = 0;
-  let reused = 0;
+    const maxTextFileBytes = options.maxTextFileBytes ?? prevConfig?.maxTextFileBytes ?? 2 * 1024 * 1024;
+    const maxEntries = options.maxEntries ?? prevConfig?.maxEntries ?? 50_000;
 
-  // Build lookup index from previous analysis for incremental refresh
-  const prevNodesByPath = new Map<string, ProjectNode>();
-  if (previousProject) {
-    for (const node of previousProject.nodes) {
-      if (node.kind === 'file') {
-        prevNodesByPath.set(node.path, node);
+    const nodes: ProjectNode[] = [];
+    const warnings: ScanWarning[] = [];
+    let discovered = 0;
+    let analyzed = 0;
+    let reused = 0;
+
+    // Build lookup index from previous analysis for incremental refresh
+    const prevNodesByPath = new Map<string, ProjectNode>();
+    if (previousProject) {
+      for (const node of previousProject.nodes) {
+        if (node.kind === 'file') {
+          prevNodesByPath.set(node.path, node);
+        }
       }
     }
-  }
 
-  // Canonical root node: path is ""
-  const rootId = stableNodeId(projectId, '');
-  nodes.push({
-    id: rootId,
-    projectId,
-    parentId: null,
-    name: handle.name,
-    path: '',
-    kind: 'project',
-    sizeBytes: 0,
-    loc: 0,
-    depth: 0,
-  });
+    // Canonical root node: path is ""
+    const rootId = stableNodeId(projectId, '');
+    nodes.push({
+      id: rootId,
+      projectId,
+      parentId: null,
+      name: handle.name,
+      path: '',
+      kind: 'project',
+      sizeBytes: 0,
+      loc: 0,
+      depth: 0,
+    });
 
-  const allFilePaths = new Set<string>();
-  let tsConfigAliases: TsConfigAliases | undefined;
+    const allFilePaths = new Set<string>();
+    let tsConfigAliases: TsConfigAliases | undefined;
 
-  // Bounded batch buffer for off-main-thread parsing
-  let pendingBatch: BatchItem[] = [];
-  const nodeById = new Map<string, ProjectNode>();
-
-  async function flushPendingBatch(): Promise<void> {
-    if (pendingBatch.length === 0) return;
-    const batchToProcess = pendingBatch;
-    pendingBatch = [];
-    const results = await workerBridge.parseBatch(batchToProcess, options.signal);
-    for (const res of results) {
-      const node = nodeById.get(res.id);
-      if (node) {
-        node.loc = res.loc;
-        node.rawSpecifiers = res.rawSpecifiers;
-        node.dependencyParserVersion = DEPENDENCY_PARSER_VERSION;
-      }
-    }
-  }
-
-  async function walk(directory: LocalDirectoryHandle, parentId: string, parentPath: string, depth: number): Promise<void> {
-    ensureNotAborted(options.signal);
-    let entries: AsyncIterableIterator<LocalFileHandle | LocalDirectoryHandle>;
-    try {
-      entries = directory.values();
-    } catch (error) {
-      if (depth === 1) {
-        throw new RootAccessError(handle.name, error instanceof Error ? error.message : 'Permission denied or folder inaccessible');
-      }
-      warnings.push({ path: parentPath, message: error instanceof Error ? error.message : 'Directory could not be read.' });
-      return;
+    interface FileWorkItem {
+      entry: LocalFileHandle;
+      path: string;
+      parentId: string;
+      depth: number;
     }
 
-    try {
-      for await (const entry of entries) {
-        ensureNotAborted(options.signal);
-        if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
-        if (shouldIgnoreEntry(entry.name, entry.kind)) continue;
+    const fileWorkItems: FileWorkItem[] = [];
 
-        // Canonical project-relative path
-        const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-        discovered += 1;
+    // Phase 1: Traversal and Discovery (Indeterminate)
+    async function walk(directory: LocalDirectoryHandle, parentId: string, parentPath: string, depth: number): Promise<void> {
+      ensureNotAborted(options.signal);
+      let entries: AsyncIterableIterator<LocalFileHandle | LocalDirectoryHandle>;
+      try {
+        entries = directory.values();
+      } catch (error) {
+        if (depth === 1) {
+          throw new RootAccessError(handle.name, error instanceof Error ? error.message : 'Permission denied or folder inaccessible');
+        }
+        warnings.push({ path: parentPath, message: error instanceof Error ? error.message : 'Directory could not be read.' });
+        return;
+      }
 
-        if (entry.kind === 'directory') {
-          const id = stableNodeId(projectId, path);
-          const dirNode: ProjectNode = {
-            id,
-            projectId,
-            parentId,
-            name: entry.name,
-            path,
-            kind: 'directory',
-            sizeBytes: 0,
-            loc: 0,
-            depth,
-          };
-          nodes.push(dirNode);
-          await walk(entry, id, path, depth + 1);
-        } else {
-          allFilePaths.add(path);
-          const nodeId = stableNodeId(projectId, path);
+      try {
+        for await (const entry of entries) {
+          ensureNotAborted(options.signal);
+          if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
+          if (shouldIgnoreEntry(entry.name, entry.kind, customExclusions)) continue;
 
-          try {
-            const file = await entry.getFile();
-            const analyzable = isAnalyzableText(file.name);
-            const category = analysisCategoryFor(path, file.name);
-            const sensitive = isSensitiveTextFile(file.name);
-            const isCategoryEnabled = shouldAnalyzeCategory(category, effectiveCategories);
-            const prev = prevNodesByPath.get(path);
+          // Canonical project-relative path
+          const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+          discovered += 1;
 
-            let loc = 0;
-            let analysisStatus: ProjectNode['analysisStatus'] = 'metadata-only';
-            let rawSpecifiers: RawSpecifier[] | undefined;
-
-            // Only attempt to parse tsconfig/jsconfig for aliases IF Configuration category is enabled!
-            if (
-              (file.name === 'tsconfig.json' || file.name === 'jsconfig.json') &&
-              !tsConfigAliases &&
-              isCategoryEnabled &&
-              file.size < 512 * 1024
-            ) {
-              try {
-                const confText = await file.text();
-                tsConfigAliases = parseTsConfigAliases(confText);
-              } catch {
-                // Ignore parse errors
-              }
-            }
-
-            if (sensitive) {
-              // Sensitive file: NEVER call file.text()!
-              analysisStatus = 'skipped-sensitive';
-            } else if (analyzable && !isCategoryEnabled) {
-              // Disabled category: NEVER call file.text()!
-              analysisStatus = 'metadata-only';
-            } else if (analyzable && file.size > maxTextFileBytes) {
-              analysisStatus = 'skipped-large';
-            } else if (analyzable) {
-              // Incremental reuse check:
-              // Can only reuse if modified timestamp & size match, was analyzed, and has compatible raw specifiers
-              const canReuse =
-                prev &&
-                prev.modifiedAt === file.lastModified &&
-                prev.sizeBytes === file.size &&
-                prev.analysisStatus === 'analyzed' &&
-                prev.dependencyParserVersion === DEPENDENCY_PARSER_VERSION &&
-                prev.rawSpecifiers !== undefined;
-
-              if (canReuse) {
-                loc = prev.loc;
-                rawSpecifiers = prev.rawSpecifiers;
-                analysisStatus = 'analyzed';
-                reused += 1;
-              } else {
-                // Read text and queue for bounded off-thread worker parsing
-                const text = await file.text();
-                analysisStatus = 'analyzed';
-                analyzed += 1;
-                pendingBatch.push({ id: nodeId, path, text });
-
-                if (pendingBatch.length >= 16) {
-                  await flushPendingBatch();
-                }
-              }
-            }
-
-            const fileNode: ProjectNode = {
-              id: nodeId,
+          if (entry.kind === 'directory') {
+            const id = stableNodeId(projectId, path);
+            const dirNode: ProjectNode = {
+              id,
               projectId,
               parentId,
-              name: file.name,
+              name: entry.name,
               path,
-              kind: 'file',
-              extension: extensionOf(file.name),
-              language: languageFor(file.name),
-              sizeBytes: file.size,
-              loc,
-              modifiedAt: file.lastModified,
+              kind: 'directory',
+              sizeBytes: 0,
+              loc: 0,
               depth,
-              analysisStatus,
-              rawSpecifiers,
-              dependencyParserVersion: rawSpecifiers ? DEPENDENCY_PARSER_VERSION : undefined,
             };
+            nodes.push(dirNode);
+            await walk(entry, id, path, depth + 1);
+          } else {
+            allFilePaths.add(path);
+            fileWorkItems.push({ entry, path, parentId, depth });
+          }
 
-            nodes.push(fileNode);
-            nodeById.set(nodeId, fileNode);
-          } catch (error) {
-            if (error instanceof DOMException && error.name === 'AbortError') throw error;
-            warnings.push({ path, message: error instanceof Error ? error.message : 'File could not be read.' });
+          scheduler.update({
+            phase: 'discovering',
+            discovered,
+            analyzed: 0,
+            reused: 0,
+            warnings: warnings.length,
+            currentPath: path,
+          });
+
+          if (discovered % 32 === 0) await yieldToBrowser();
+        }
+      } catch (error) {
+        if (error instanceof ScanLimitError || (error instanceof DOMException && error.name === 'AbortError') || error instanceof RootAccessError) {
+          throw error;
+        }
+        if (depth === 1) {
+          throw new RootAccessError(handle.name, error instanceof Error ? error.message : 'Directory traversal failed on root folder.');
+        }
+        warnings.push({ path: parentPath, message: error instanceof Error ? error.message : 'Directory traversal failed.' });
+      }
+    }
+
+    await walk(handle, rootId, '', 1);
+    ensureNotAborted(options.signal);
+
+    // Bounded batch buffer for off-main-thread parsing
+    let pendingBatch: BatchItem[] = [];
+    const nodeById = new Map<string, ProjectNode>();
+
+    async function flushPendingBatch(): Promise<void> {
+      if (pendingBatch.length === 0) return;
+      const batchToProcess = pendingBatch;
+      pendingBatch = [];
+      const results = await workerBridge.parseBatch(batchToProcess, options.signal);
+      for (const res of results) {
+        const node = nodeById.get(res.id);
+        if (node) {
+          node.loc = res.loc;
+          node.rawSpecifiers = res.rawSpecifiers;
+          node.dependencyParserVersion = DEPENDENCY_PARSER_VERSION;
+        }
+      }
+    }
+
+    // Phase 2: File Analysis (Determinate - totalToAnalyze is known)
+    const totalToAnalyze = fileWorkItems.length;
+
+    for (let i = 0; i < totalToAnalyze; i += 1) {
+      ensureNotAborted(options.signal);
+      const { entry, path, parentId, depth } = fileWorkItems[i];
+      const nodeId = stableNodeId(projectId, path);
+
+      try {
+        const file = await entry.getFile();
+        const analyzable = isAnalyzableText(file.name);
+        const category = analysisCategoryFor(path, file.name);
+        const sensitive = isSensitiveTextFile(file.name);
+        const isCategoryEnabled = shouldAnalyzeCategory(category, effectiveCategories);
+        const prev = prevNodesByPath.get(path);
+
+        let loc = 0;
+        let analysisStatus: ProjectNode['analysisStatus'] = 'metadata-only';
+        let rawSpecifiers: RawSpecifier[] | undefined;
+
+        // Only parse tsconfig/jsconfig for aliases IF Configuration category is enabled
+        if (
+          (file.name === 'tsconfig.json' || file.name === 'jsconfig.json') &&
+          !tsConfigAliases &&
+          isCategoryEnabled &&
+          file.size < 512 * 1024
+        ) {
+          try {
+            const confText = await file.text();
+            tsConfigAliases = parseTsConfigAliases(confText);
+          } catch {
+            // Ignore parse errors
           }
         }
 
-        options.onProgress?.({ discovered, analyzed, reused, warnings: warnings.length, currentPath: path });
-        if (discovered % 32 === 0) await yieldToBrowser();
-      }
-    } catch (error) {
-      if (error instanceof ScanLimitError || (error instanceof DOMException && error.name === 'AbortError') || error instanceof RootAccessError) {
-        throw error;
-      }
-      if (depth === 1) {
-        throw new RootAccessError(handle.name, error instanceof Error ? error.message : 'Directory traversal failed on root folder.');
-      }
-      warnings.push({ path: parentPath, message: error instanceof Error ? error.message : 'Directory traversal failed.' });
-    }
-  }
+        if (sensitive) {
+          analysisStatus = 'skipped-sensitive';
+        } else if (analyzable && !isCategoryEnabled) {
+          analysisStatus = 'metadata-only';
+        } else if (analyzable && file.size > maxTextFileBytes) {
+          analysisStatus = 'skipped-large';
+        } else if (analyzable) {
+          const canReuse =
+            prev &&
+            prev.modifiedAt === file.lastModified &&
+            prev.sizeBytes === file.size &&
+            prev.analysisStatus === 'analyzed' &&
+            prev.dependencyParserVersion === DEPENDENCY_PARSER_VERSION &&
+            prev.rawSpecifiers !== undefined;
 
-  await walk(handle, rootId, '', 1);
-  ensureNotAborted(options.signal);
+          if (canReuse) {
+            loc = prev.loc;
+            rawSpecifiers = prev.rawSpecifiers;
+            analysisStatus = 'analyzed';
+            reused += 1;
+          } else {
+            const text = await file.text();
+            analysisStatus = 'analyzed';
+            analyzed += 1;
+            pendingBatch.push({ id: nodeId, path, text });
 
-  // Flush any remaining files in batch
-  await flushPendingBatch();
-  ensureNotAborted(options.signal);
+            if (pendingBatch.length >= 16) {
+              await flushPendingBatch();
+            }
+          }
+        }
 
-  // Phase B: Resolve dependency specifiers against CURRENT file set and CURRENT aliases off-thread
-  const filesForResolution: Array<{ id: string; path: string; rawSpecifiers: RawSpecifier[] }> = [];
-  for (const node of nodes) {
-    if (node.kind === 'file') {
-      filesForResolution.push({
-        id: node.id,
-        path: node.path,
-        rawSpecifiers: node.rawSpecifiers ?? [],
+        const fileNode: ProjectNode = {
+          id: nodeId,
+          projectId,
+          parentId,
+          name: file.name,
+          path,
+          kind: 'file',
+          extension: extensionOf(file.name),
+          language: languageFor(file.name),
+          sizeBytes: file.size,
+          loc,
+          modifiedAt: file.lastModified,
+          depth,
+          analysisStatus,
+          rawSpecifiers,
+          dependencyParserVersion: rawSpecifiers ? DEPENDENCY_PARSER_VERSION : undefined,
+        };
+
+        nodes.push(fileNode);
+        nodeById.set(nodeId, fileNode);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
+        warnings.push({ path, message: error instanceof Error ? error.message : 'File could not be read.' });
+      }
+
+      scheduler.update({
+        phase: 'analyzing',
+        discovered,
+        totalToAnalyze,
+        analyzed,
+        reused,
+        warnings: warnings.length,
+        currentPath: path,
+        percentage: Math.round(((analyzed + reused) / Math.max(1, totalToAnalyze)) * 100),
       });
+
+      if (i % 32 === 0) await yieldToBrowser();
     }
-  }
 
-  const dependencyGraph = await workerBridge.resolveGraph(
-    filesForResolution,
-    Array.from(allFilePaths),
-    tsConfigAliases,
-    options.signal
-  );
+    // Flush any remaining files in batch
+    await flushPendingBatch();
+    ensureNotAborted(options.signal);
 
-  // Map incoming and outgoing dependency counts
-  const outgoingCounts = new Map<string, number>();
-  const incomingCounts = new Map<string, number>();
-  for (const edge of dependencyGraph.edges) {
-    if (!edge.isExternal && edge.isResolved) {
-      outgoingCounts.set(edge.sourceId, (outgoingCounts.get(edge.sourceId) ?? 0) + 1);
-      if (edge.targetId) {
-        incomingCounts.set(edge.targetId, (incomingCounts.get(edge.targetId) ?? 0) + 1);
+    // Phase 3: Building Relationships
+    scheduler.update({
+      phase: 'building-relationships',
+      discovered,
+      totalToAnalyze,
+      analyzed,
+      reused,
+      warnings: warnings.length,
+      currentPath: 'Resolving module dependency relationships…',
+      percentage: 100,
+    });
+
+    const filesForResolution: Array<{ id: string; path: string; rawSpecifiers: RawSpecifier[] }> = [];
+    for (const node of nodes) {
+      if (node.kind === 'file') {
+        filesForResolution.push({
+          id: node.id,
+          path: node.path,
+          rawSpecifiers: node.rawSpecifiers ?? [],
+        });
       }
     }
+
+    const dependencyGraph = await workerBridge.resolveGraph(
+      filesForResolution,
+      Array.from(allFilePaths),
+      tsConfigAliases,
+      options.signal
+    );
+
+    // Phase 4: Local Persistence / Finalizing
+    scheduler.update({
+      phase: 'saving',
+      discovered,
+      totalToAnalyze,
+      analyzed,
+      reused,
+      warnings: warnings.length,
+      currentPath: 'Finalizing local architectural index…',
+      percentage: 100,
+    });
+
+    const outgoingCounts = new Map<string, number>();
+    const incomingCounts = new Map<string, number>();
+    for (const edge of dependencyGraph.edges) {
+      if (!edge.isExternal && edge.isResolved) {
+        outgoingCounts.set(edge.sourceId, (outgoingCounts.get(edge.sourceId) ?? 0) + 1);
+        if (edge.targetId) {
+          incomingCounts.set(edge.targetId, (incomingCounts.get(edge.targetId) ?? 0) + 1);
+        }
+      }
+    }
+
+    for (const node of nodes) {
+      node.outgoingCount = outgoingCounts.get(node.id) ?? 0;
+      node.incomingCount = incomingCounts.get(node.id) ?? 0;
+    }
+
+    const aggregated = aggregateDirectoryStats(nodes);
+    const laidOut = withDeterministicLayout(aggregated);
+    const metrics = calculateMetrics(laidOut);
+
+    metrics.dependencyEdges = dependencyGraph.edges.filter((e) => !e.isExternal && e.isResolved).length;
+    metrics.externalPackagesCount = dependencyGraph.externalPackages.length;
+    metrics.circularDependenciesCount = dependencyGraph.circularDependencies.length;
+
+    const now = Date.now();
+    const analysisConfig: ProjectAnalysisConfig = {
+      selectedCategories: Array.from(effectiveCategories),
+      maxTextFileBytes,
+      maxEntries,
+      scannerAnalysisVersion: SCANNER_ANALYSIS_VERSION,
+      dependencyParserVersion: DEPENDENCY_PARSER_VERSION,
+      dependencyResolverVersion: DEPENDENCY_RESOLVER_VERSION,
+      customExcludedPaths: Array.from(customExclusions),
+    };
+
+    scheduler.flush();
+
+    return {
+      schemaVersion: 3,
+      id: projectId,
+      name: handle.name,
+      rootPathLabel: handle.name,
+      createdAt: options.createdAt ?? previousProject?.createdAt ?? now,
+      updatedAt: now,
+      source: 'local',
+      nodes: laidOut,
+      metrics,
+      warnings,
+      dependencies: dependencyGraph,
+      analysisConfig,
+    };
+  } catch (error) {
+    scheduler.cancel();
+    throw error;
   }
-
-  for (const node of nodes) {
-    node.outgoingCount = outgoingCounts.get(node.id) ?? 0;
-    node.incomingCount = incomingCounts.get(node.id) ?? 0;
-  }
-
-  const aggregated = aggregateDirectoryStats(nodes);
-  const laidOut = withDeterministicLayout(aggregated);
-  const metrics = calculateMetrics(laidOut);
-
-  metrics.dependencyEdges = dependencyGraph.edges.filter((e) => !e.isExternal && e.isResolved).length;
-  metrics.externalPackagesCount = dependencyGraph.externalPackages.length;
-  metrics.circularDependenciesCount = dependencyGraph.circularDependencies.length;
-
-  const now = Date.now();
-  const analysisConfig: ProjectAnalysisConfig = {
-    selectedCategories: Array.from(effectiveCategories),
-    maxTextFileBytes,
-    maxEntries,
-    scannerAnalysisVersion: SCANNER_ANALYSIS_VERSION,
-    dependencyParserVersion: DEPENDENCY_PARSER_VERSION,
-    dependencyResolverVersion: DEPENDENCY_RESOLVER_VERSION,
-  };
-
-  return {
-    schemaVersion: 3,
-    id: projectId,
-    name: handle.name,
-    rootPathLabel: handle.name,
-    createdAt: options.createdAt ?? previousProject?.createdAt ?? now,
-    updatedAt: now,
-    source: 'local',
-    nodes: laidOut,
-    metrics,
-    warnings,
-    dependencies: dependencyGraph,
-    analysisConfig,
-  };
 }
+

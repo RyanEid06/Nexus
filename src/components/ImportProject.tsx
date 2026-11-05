@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, FolderOpen, HardDrive, ShieldCheck, X } from 'lucide-react';
+import { Check, FolderOpen, HardDrive, Plus, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { AnalysisCategory } from '../domain/models';
 import {
   pickLocalProjectDirectory,
@@ -33,18 +33,23 @@ export function ImportProject({
   const [selectedCategories, setSelectedCategories] = useState<Set<AnalysisCategory>>(
     new Set(categories.map(([key]) => key))
   );
+  const [customExclusions, setCustomExclusions] = useState<string[]>([]);
+  const [customInput, setCustomInput] = useState('');
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+
   const abortRef = useRef<AbortController | null>(null);
+  const lastPhaseRef = useRef<string>('');
   const isSupported = supportsLocalDirectoryPicker();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) {
-        onClose();
+      if (e.key === 'Escape') {
+        cancel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [busy, onClose]);
+  }, [busy]);
 
   async function choose() {
     if (!isSupported) {
@@ -54,7 +59,8 @@ export function ImportProject({
     try {
       setError('');
       setProgress(null);
-      setFolder(await pickLocalProjectDirectory());
+      const picked = await pickLocalProjectDirectory();
+      setFolder(picked);
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message);
     }
@@ -69,11 +75,44 @@ export function ImportProject({
     });
   }
 
+  function addCustomExclusion() {
+    const trimmed = customInput.trim();
+    if (!trimmed) return;
+    const normalized = trimmed.replace(/\/+$/, '');
+    if (!customExclusions.includes(normalized)) {
+      setCustomExclusions([...customExclusions, normalized]);
+    }
+    setCustomInput('');
+  }
+
+  function removeCustomExclusion(item: string) {
+    setCustomExclusions(customExclusions.filter((x) => x !== item));
+  }
+
+  const handleProgress = (p: ScanProgress) => {
+    setProgress(p);
+
+    // Announce phase changes to screen readers politely (Section 18F)
+    if (p.phase !== lastPhaseRef.current) {
+      lastPhaseRef.current = p.phase;
+      if (p.phase === 'discovering') {
+        setLiveAnnouncement('Phase 1: Discovering project structure.');
+      } else if (p.phase === 'analyzing') {
+        setLiveAnnouncement(`Phase 2: Analyzing ${p.totalToAnalyze ?? 0} files.`);
+      } else if (p.phase === 'building-relationships') {
+        setLiveAnnouncement('Phase 3: Building dependency relationships.');
+      } else if (p.phase === 'saving') {
+        setLiveAnnouncement('Phase 4: Finalizing and saving local index.');
+      }
+    }
+  };
+
   async function analyze() {
     if (!folder) return;
     setBusy(true);
     setError('');
     setProgress(null);
+    lastPhaseRef.current = '';
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -90,17 +129,23 @@ export function ImportProject({
         maxTextFileBytes: preferences.maxTextFileBytes,
         maxEntries: preferences.maxEntries,
         analyzeCategories: selectedCategories,
+        customExclusions: customExclusions.length > 0 ? customExclusions : undefined,
         signal: controller.signal,
-        onProgress: setProgress,
+        onProgress: handleProgress,
         previousProject: existing,
       });
 
+      setLiveAnnouncement('Project analysis complete.');
       await saveProject(project, folder);
       setProject(project);
       onClose();
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
-        setError(err instanceof Error ? err.message : 'Analysis failed');
+        const msg = err instanceof Error ? err.message : 'Analysis failed';
+        setError(msg);
+        setLiveAnnouncement(`Analysis failed: ${msg}`);
+      } else {
+        setLiveAnnouncement('Project analysis was canceled.');
       }
     } finally {
       abortRef.current = null;
@@ -111,6 +156,7 @@ export function ImportProject({
   function cancel() {
     if (busy) {
       abortRef.current?.abort();
+      setLiveAnnouncement('Stopping analysis...');
       return;
     }
     onClose();
@@ -128,6 +174,7 @@ export function ImportProject({
           className="modal-close"
           onClick={cancel}
           aria-label={busy ? 'Cancel analysis' : 'Close modal'}
+          title={busy ? 'Stop analysis' : 'Close modal'}
         >
           <X size={16} />
         </button>
@@ -158,7 +205,6 @@ export function ImportProject({
           )}
         </div>
 
-
         <h1>Configure Project Analysis</h1>
         <p>
           NEXUS indexes the selected folder directly in place. Source contents are read only when
@@ -166,7 +212,7 @@ export function ImportProject({
         </p>
 
         {!isSupported && (
-          <div className="error-box">
+          <div className="error-box" role="alert">
             Direct folder selection requires a desktop Chromium browser (Chrome, Edge, Brave, Opera, Arc).
           </div>
         )}
@@ -183,6 +229,7 @@ export function ImportProject({
         </button>
 
         <div className="import-grid">
+          {/* Column 1: Included Categories */}
           <article>
             <h3>Analyze contents of</h3>
             {categories.map(([key, label]) => (
@@ -202,6 +249,7 @@ export function ImportProject({
             </label>
           </article>
 
+          {/* Column 2: Automatic & Custom Exclusions */}
           <article>
             <h3>Excluded before traversal</h3>
             {[
@@ -211,45 +259,197 @@ export function ImportProject({
               'dist/',
               '.gradle/',
               'coverage/',
-              'known caches/vendor output',
+              'known caches/vendor',
             ].map((item) => (
               <label key={item}>
                 <input type="checkbox" checked readOnly />
                 <span>{item}</span>
               </label>
             ))}
+
+            {/* Custom Exclusions (Section 20) */}
+            <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid #282A3D' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="text"
+                  placeholder="Exclude folder..."
+                  value={customInput}
+                  onChange={(e) => setCustomInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addCustomExclusion();
+                    }
+                  }}
+                  disabled={busy}
+                  style={{
+                    background: '#151624',
+                    border: '1px solid #2B2E42',
+                    borderRadius: '5px',
+                    padding: '4px 8px',
+                    fontSize: '10px',
+                    color: 'white',
+                    width: '100%',
+                  }}
+                />
+                <button
+                  type="button"
+                  className="ghost small"
+                  style={{ padding: '4px 8px' }}
+                  onClick={addCustomExclusion}
+                  disabled={busy || !customInput.trim()}
+                  title="Add folder to exclude"
+                >
+                  <Plus size={12} />
+                </button>
+              </div>
+
+              {customExclusions.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
+                  {customExclusions.map((item) => (
+                    <span
+                      key={item}
+                      style={{
+                        background: '#1F2236',
+                        border: '1px solid #31354F',
+                        borderRadius: '4px',
+                        padding: '2px 6px',
+                        fontSize: '9px',
+                        color: '#C4B5FD',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      {item}
+                      {!busy && (
+                        <button
+                          type="button"
+                          onClick={() => removeCustomExclusion(item)}
+                          style={{
+                            background: 'transparent',
+                            border: 0,
+                            padding: 0,
+                            color: '#9CA3AF',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <Trash2 size={9} />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </article>
 
+          {/* Column 3: Scan Summary & Calm Real Progress (Section 18B & 18D) */}
           <article className="scan-summary">
             <h3>Scan Summary</h3>
             <p>
-              <HardDrive size={17} /> Direct local access
+              <HardDrive size={15} /> Direct local access
             </p>
             <p>
-              <ShieldCheck size={17} /> No source upload
+              <ShieldCheck size={15} /> No source upload
             </p>
-            <strong>
-              {progress
-                ? `${progress.discovered.toLocaleString()} entries · ${progress.analyzed.toLocaleString()} analyzed${
-                    progress.reused > 0 ? ` · ${progress.reused.toLocaleString()} reused` : ''
-                  }`
-                : 'Ready to scan'}
-            </strong>
-            {progress && (
-              <>
-                <small title={progress.currentPath}>{progress.currentPath}</small>
-                {progress.warnings > 0 && (
-                  <small className="text-amber-400">
-                    {progress.warnings} recoverable warning
-                    {progress.warnings === 1 ? '' : 's'}
-                  </small>
-                )}
-              </>
-            )}
+
+            <div className="scan-progress-box">
+              {progress ? (
+                <>
+                  <div className="progress-phase-title">
+                    <span>
+                      {progress.phase === 'discovering' && 'Discovering project…'}
+                      {progress.phase === 'analyzing' && 'Analyzing files'}
+                      {progress.phase === 'building-relationships' && 'Building relationships'}
+                      {progress.phase === 'saving' && 'Saving local index'}
+                    </span>
+                    {progress.phase === 'analyzing' && progress.percentage !== undefined && (
+                      <span className="tabular-nums">{progress.percentage}%</span>
+                    )}
+                  </div>
+
+                  {/* Horizontal Calm Progress Bar (Section 18B) */}
+                  <div
+                    className="progress-bar-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progress.phase === 'analyzing' ? progress.percentage : undefined}
+                    aria-label={
+                      progress.phase === 'discovering'
+                        ? 'Discovering project files'
+                        : `Analyzing files: ${progress.percentage ?? 0}%`
+                    }
+                  >
+                    {progress.phase === 'discovering' || progress.phase === 'building-relationships' ? (
+                      <div className="progress-bar-indeterminate" />
+                    ) : (
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${Math.min(100, Math.max(2, progress.percentage ?? 0))}%` }}
+                      />
+                    )}
+                  </div>
+
+                  {/* Stable Numeric Counters (Section 18C) */}
+                  <div className="progress-stats-row">
+                    {progress.phase === 'discovering' ? (
+                      <span>{progress.discovered.toLocaleString()} entries found</span>
+                    ) : (
+                      <>
+                        <span>
+                          {(progress.analyzed + progress.reused).toLocaleString()} / {(progress.totalToAnalyze ?? progress.discovered).toLocaleString()}
+                        </span>
+                        <span style={{ color: '#8E92A5', fontSize: '10px' }}>
+                          {progress.analyzed} analyzed · {progress.reused} reused
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Safely Truncated Current Path (Section 18C) */}
+                  <div className="progress-path-text" title={progress.currentPath}>
+                    {progress.currentPath}
+                  </div>
+
+                  {/* Stable Warnings Indicator */}
+                  <div style={{ minHeight: '16px' }}>
+                    {progress.warnings > 0 && (
+                      <span className="warning-text" style={{ fontSize: '10px' }}>
+                        {progress.warnings} recoverable warning{progress.warnings === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: '#737789', fontSize: '11px', textAlign: 'center', padding: '16px 0' }}>
+                  Ready to scan
+                </div>
+              )}
+            </div>
           </article>
         </div>
 
-        {error && <div className="error-box">{error}</div>}
+        {/* Polite Screen Reader Live Region (Section 18F) */}
+        <div
+          aria-live="polite"
+          aria-atomic="true"
+          style={{
+            position: 'absolute',
+            width: '1px',
+            height: '1px',
+            margin: '-1px',
+            padding: '0',
+            overflow: 'hidden',
+            clip: 'rect(0, 0, 0, 0)',
+            border: '0',
+          }}
+        >
+          {liveAnnouncement}
+        </div>
+
+        {error && <div className="error-box" role="alert">{error}</div>}
 
         <footer>
           <button className="ghost" onClick={cancel}>

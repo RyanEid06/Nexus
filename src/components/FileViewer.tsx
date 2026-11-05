@@ -321,7 +321,7 @@ export function FileViewer() {
                 aria-label="Copy contents"
                 onClick={handleCopy}
               >
-                {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                {copied ? <Check size={14} className="icon-success" /> : <Copy size={14} />}
                 <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
             )}
@@ -444,14 +444,14 @@ export function FileViewer() {
             <div className="viewer-error-box">
               {error.code === 'SENSITIVE_BLOCKED' ? (
                 <>
-                  <Lock size={36} className="text-amber-400" />
+                  <Lock size={36} className="icon-warning" />
                   <h3>Sensitive File Safeguard</h3>
                   <p>{error.message}</p>
                   <small>NEXUS intentionally refuses to read credential and environment files into memory.</small>
                 </>
               ) : (
                 <>
-                  <AlertTriangle size={36} className="text-amber-400" />
+                  <AlertTriangle size={36} className="icon-warning" />
                   <h3>Cannot Preview File</h3>
                   <p>{error.message}</p>
                 </>

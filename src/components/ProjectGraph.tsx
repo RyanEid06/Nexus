@@ -4,7 +4,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { AlertTriangle, MapPin, Layers } from 'lucide-react';
 import { DEFAULT_PREFERENCES, type ProjectNode } from '../domain/models';
-import { visibleGraphNodes } from '../services/layout';
+import { computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
 import { loadPreferences } from '../storage/db';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor, CLUSTER_COLORS } from '../utils/fileTypes';
@@ -21,28 +21,34 @@ function topLevelAncestor(node: ProjectNode, byId: Map<string, ProjectNode>): Pr
 
 function GraphNode3D({
   node,
+  position,
   selected,
   isHovered,
   color,
   showLabel,
   reducedEffects,
+  isFocusRoot,
   onSelect,
+  onDrillDown,
   onOpen,
   onPointerOver,
   onPointerOut,
 }: {
   node: ProjectNode;
+  position: [number, number, number];
   selected: boolean;
   isHovered: boolean;
   color: string;
   showLabel: boolean;
   reducedEffects: boolean;
+  isFocusRoot?: boolean;
   onSelect: () => void;
+  onDrillDown?: () => void;
   onOpen?: () => void;
   onPointerOver: () => void;
   onPointerOut: () => void;
 }) {
-  const p = node.position ?? [0, 0, 0];
+  const p = position;
   const isProject = node.kind === 'project';
   const isDirectory = node.kind === 'directory';
 
@@ -60,8 +66,8 @@ function GraphNode3D({
         onPointerOut();
       }}
     >
-      {isProject ? (
-        // Project Core: Layered procedural obsidian/violet orb with orbital rim & ground halo
+      {isProject || isFocusRoot ? (
+        // Project Core or Focused Directory Hub: Layered procedural obsidian/violet orb
         <group
           onClick={(event) => {
             event.stopPropagation();
@@ -84,8 +90,8 @@ function GraphNode3D({
           <mesh>
             <sphereGeometry args={[0.95, 32, 32]} />
             <meshStandardMaterial
-              color="#8B5CF6"
-              emissive="#8B5CF6"
+              color={nodeColor}
+              emissive={nodeColor}
               emissiveIntensity={reducedEffects ? 0.45 : selected ? 1.2 : 0.75}
               transparent
               opacity={0.35}
@@ -109,11 +115,15 @@ function GraphNode3D({
           )}
         </group>
       ) : isDirectory ? (
-        // Directory Hub: Dimensional beveled platform hub with top obsidian inlay and perimeter color ring
+        // Directory Hub: Dimensional beveled platform hub
         <group
           onClick={(event) => {
             event.stopPropagation();
             onSelect();
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onDrillDown?.();
           }}
           scale={selected ? 1.22 : isHovered ? 1.12 : 1}
         >
@@ -175,7 +185,7 @@ function GraphNode3D({
       )}
 
       {showLabel && (
-        <Html center distanceFactor={10} position={[0, isProject ? 1.4 : isDirectory ? 0.8 : 0.65, 0]}>
+        <Html center distanceFactor={10} position={[0, isProject || isFocusRoot ? 1.4 : isDirectory ? 0.8 : 0.65, 0]}>
           <button
             className={`graph-label ${selected ? 'selected' : ''}`}
             onPointerDown={(e) => e.stopPropagation()}
@@ -185,7 +195,8 @@ function GraphNode3D({
             }}
             onDoubleClick={(e) => {
               e.stopPropagation();
-              onOpen?.();
+              if (isDirectory) onDrillDown?.();
+              else onOpen?.();
             }}
             aria-label={`${node.name} (${node.kind})`}
           >
@@ -204,13 +215,56 @@ function GraphNode3D({
   );
 }
 
+function OverflowNode3D({
+  overflow,
+  position,
+  active,
+  onOpenStructure,
+}: {
+  overflow: ViewportOverflowNode;
+  position: [number, number, number];
+  active: boolean;
+  onOpenStructure: () => void;
+}) {
+  return (
+    <group position={position}>
+      <mesh
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenStructure();
+        }}
+      >
+        <sphereGeometry args={[0.3, 16, 16]} />
+        <meshStandardMaterial color="#6366F1" emissive="#4F46E5" emissiveIntensity={0.8} roughness={0.3} />
+      </mesh>
+      {active && (
+        <Html center distanceFactor={11} position={[0, 0.6, 0]}>
+          <button
+            className="graph-label"
+            style={{ borderColor: '#6366F1', background: '#11121B', color: '#A5B4FC' }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenStructure();
+            }}
+            title="Open in Structure View"
+          >
+            <b>{overflow.label}</b>
+          </button>
+        </Html>
+      )}
+    </group>
+  );
+}
+
 function CameraRig({
+  active,
   selectedPos,
-  visibleNodes,
+  positions3D,
   reducedEffects,
 }: {
+  active: boolean;
   selectedPos: [number, number, number] | null;
-  visibleNodes: ProjectNode[];
+  positions3D: Map<string, [number, number, number]>;
   reducedEffects: boolean;
 }) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -228,7 +282,7 @@ function CameraRig({
   }, [selectedPos]);
 
   useFrame(() => {
-    if (!controlsRef.current) return;
+    if (!active || !controlsRef.current) return;
 
     if (isTransitioning.current) {
       if (reducedEffects) {
@@ -247,7 +301,6 @@ function CameraRig({
       }
       controlsRef.current.update();
     } else {
-      // Normal smooth tracking to target if needed
       if (reducedEffects) {
         controlsRef.current.target.copy(targetLookAt.current);
       } else {
@@ -258,28 +311,25 @@ function CameraRig({
   });
 
   useEffect(() => {
-    const handle3DAction = (e: CustomEvent<{ action: string; nodeId?: string }>) => {
-      if (!controlsRef.current) return;
+    const handle3DAction = (e: CustomEvent<{ action: string; nodeId?: string; targetMode?: string }>) => {
+      if (!active || !controlsRef.current) return;
+      if (e.detail.targetMode && e.detail.targetMode !== '3d') return;
 
       if (e.detail.action === 'reset') {
         targetLookAt.current.set(0, 0, 0);
         targetCamPos.current.set(0, 8, 17);
         isTransitioning.current = true;
       } else if (e.detail.action === 'focus') {
-        // Center on selected node if available
         if (selectedPos) {
           targetLookAt.current.set(selectedPos[0], selectedPos[1], selectedPos[2]);
           targetCamPos.current.set(selectedPos[0] + 3.2, selectedPos[1] + 3.8, selectedPos[2] + 5.2);
           isTransitioning.current = true;
         }
       } else if (e.detail.action === 'fit') {
-        // Calculate bounding box of all visible nodes
-        if (visibleNodes.length > 0) {
+        if (positions3D.size > 0) {
           const box = new THREE.Box3();
-          for (const n of visibleNodes) {
-            if (n.position) {
-              box.expandByPoint(new THREE.Vector3(...n.position));
-            }
+          for (const pos of positions3D.values()) {
+            box.expandByPoint(new THREE.Vector3(...pos));
           }
           if (!box.isEmpty()) {
             const center = new THREE.Vector3();
@@ -300,12 +350,13 @@ function CameraRig({
 
     window.addEventListener('nexus:map-action' as any, handle3DAction as any);
     return () => window.removeEventListener('nexus:map-action' as any, handle3DAction as any);
-  }, [selectedPos, visibleNodes]);
+  }, [active, selectedPos, positions3D]);
 
   return (
     <OrbitControls
       ref={controlsRef}
       makeDefault
+      enabled={active}
       enableDamping={!reducedEffects}
       dampingFactor={reducedEffects ? 0 : 0.08}
       minDistance={2}
@@ -318,9 +369,11 @@ function CameraRig({
 }
 
 function Scene({
+  active,
   reducedEffects,
   relationshipMode,
 }: {
+  active: boolean;
   reducedEffects: boolean;
   relationshipMode: RelationshipFilterMode;
 }) {
@@ -329,63 +382,96 @@ function Scene({
   const select = useAppStore((s) => s.selectNode);
   const openFileViewer = useAppStore((s) => s.openFileViewer);
   const expandedNodeIds = useAppStore((s) => s.expandedNodeIds);
+  const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
+  const drillDownNode = useAppStore((s) => s.drillDownNode);
+  const setPage = useAppStore((s) => s.setPage);
+
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  const nodes = useMemo(
-    () => (project ? visibleGraphNodes(project.nodes, selectedId, expandedNodeIds) : []),
-    [project, selectedId, expandedNodeIds]
-  );
+  // Consume unified viewport
+  const viewport = useMemo(() => {
+    if (!project) return null;
+    return computeGraphViewport({
+      project,
+      mapFocusNodeId,
+      selectedNodeId: selectedId,
+      expandedNodeIds,
+      relationshipMode,
+      hoveredNodeId: hoveredId,
+    });
+  }, [project, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode, hoveredId]);
+
   const allById = useMemo(
     () => new Map((project?.nodes ?? []).map((node) => [node.id, node])),
     [project]
   );
-  const visibleById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
-  const selectedNode = selectedId ? allById.get(selectedId) : null;
-  const selectedPos = selectedNode?.position ?? null;
+  const selectedPos = selectedId && viewport?.positions3D.get(selectedId) ? viewport.positions3D.get(selectedId)! : null;
 
   const showHierarchy = relationshipMode === 'hierarchy' || relationshipMode === 'both';
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
-  // Curved Dependency edges for 3D
-  const depEdges3D = useMemo(() => {
-    if (!showDependencies || !project?.dependencies?.edges) return [];
-    const pathToNode = new Map<string, ProjectNode>();
-    for (const n of project.nodes) {
-      pathToNode.set(n.path, n);
+  // Hover and selection relationship sets for visual dimming
+  const activeHighlightedIds = useMemo(() => {
+    const targetId = hoveredId ?? selectedId;
+    if (!targetId || !viewport || !project) return null;
+
+    const set = new Set<string>();
+    set.add(targetId);
+
+    const node = viewport.visibleNodesMap.get(targetId);
+    if (node?.parentId) set.add(node.parentId);
+
+    for (const item of viewport.visibleNodes) {
+      if (item.parentId === targetId) set.add(item.id);
     }
 
-    const curves: Array<{ id: string; points: Array<[number, number, number]> }> = [];
-    for (const edge of project.dependencies.edges) {
-      if (!edge.isExternal && edge.isResolved) {
-        const sNode = pathToNode.get(edge.sourcePath);
-        const tNode = pathToNode.get(edge.targetResolvedPath ?? edge.targetPath);
-        if (sNode && tNode && sNode.id !== tNode.id) {
-          const p1 = sNode.position;
-          const p2 = tNode.position;
-          if (p1 && p2 && visibleById.has(sNode.id) && visibleById.has(tNode.id)) {
-            // Quadratic Bezier arching upward
-            const midX = (p1[0] + p2[0]) / 2;
-            const midY = (p1[1] + p2[1]) / 2;
-            const midZ = (p1[2] + p2[2]) / 2;
-            const dist = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]);
-            const archY = midY + Math.min(dist * 0.35, 3.5);
-
-            const curve = new THREE.QuadraticBezierCurve3(
-              new THREE.Vector3(...p1),
-              new THREE.Vector3(midX, archY, midZ),
-              new THREE.Vector3(...p2)
-            );
-            const points = curve.getPoints(20).map((pt) => [pt.x, pt.y, pt.z] as [number, number, number]);
-            curves.push({ id: edge.id, points });
-          }
+    if (node?.path && project.dependencies?.edges) {
+      for (const edge of project.dependencies.edges) {
+        if (edge.sourcePath === node.path && edge.targetResolvedPath) {
+          const tNode = project.nodes.find((n) => n.path === edge.targetResolvedPath);
+          if (tNode && viewport.visibleNodesMap.has(tNode.id)) set.add(tNode.id);
+        }
+        if (edge.targetResolvedPath === node.path) {
+          const sNode = project.nodes.find((n) => n.path === edge.sourcePath);
+          if (sNode && viewport.visibleNodesMap.has(sNode.id)) set.add(sNode.id);
         }
       }
     }
-    return curves;
-  }, [showDependencies, project, visibleById]);
 
-  if (!project) return null;
+    return set;
+  }, [hoveredId, selectedId, viewport, project]);
+
+  // Curved Dependency edges for 3D
+  const depEdges3D = useMemo(() => {
+    if (!showDependencies || !viewport) return [];
+
+    const curves: Array<{ id: string; points: Array<[number, number, number]>; isHighlighted: boolean }> = [];
+    for (const dep of viewport.visibleDependencyEdges) {
+      const p1 = viewport.positions3D.get(dep.sourceId);
+      const p2 = viewport.positions3D.get(dep.targetId);
+      if (p1 && p2) {
+        const midX = (p1[0] + p2[0]) / 2;
+        const midY = (p1[1] + p2[1]) / 2;
+        const midZ = (p1[2] + p2[2]) / 2;
+        const dist = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]);
+        const archY = midY + Math.min(dist * 0.35, 3.5);
+
+        const curve = new THREE.QuadraticBezierCurve3(
+          new THREE.Vector3(...p1),
+          new THREE.Vector3(midX, archY, midZ),
+          new THREE.Vector3(...p2)
+        );
+        const points = curve.getPoints(16).map((pt) => [pt.x, pt.y, pt.z] as [number, number, number]);
+        const isHighlighted =
+          Boolean(activeHighlightedIds && activeHighlightedIds.has(dep.sourceId) && activeHighlightedIds.has(dep.targetId));
+        curves.push({ id: dep.id, points, isHighlighted });
+      }
+    }
+    return curves;
+  }, [showDependencies, viewport, activeHighlightedIds]);
+
+  if (!project || !viewport) return null;
 
   return (
     <>
@@ -401,62 +487,82 @@ function Scene({
 
       {/* Structural Hierarchy Edges */}
       {showHierarchy &&
-        nodes.map((node) => {
-          if (!node.parentId || !visibleById.has(node.parentId)) return null;
-          const parent = visibleById.get(node.parentId)!;
-          const isSelectedBranch = selectedId === node.id || selectedId === parent.id;
+        viewport.hierarchyEdges.map((edge) => {
+          const p1 = viewport.positions3D.get(edge.sourceId);
+          const p2 = viewport.positions3D.get(edge.targetId);
+          if (!p1 || !p2) return null;
+
+          const isHighlighted =
+            activeHighlightedIds &&
+            activeHighlightedIds.has(edge.sourceId) &&
+            activeHighlightedIds.has(edge.targetId);
+          const isDimmed = activeHighlightedIds && !isHighlighted;
+
           return (
             <Line
-              key={`line-${node.id}`}
-              points={[parent.position ?? [0, 0, 0], node.position ?? [0, 0, 0]]}
-              color={isSelectedBranch ? '#A78BFA' : '#474563'}
-              lineWidth={isSelectedBranch ? 2 : 1.2}
+              key={edge.id}
+              points={[p1, p2]}
+              color={isHighlighted ? '#C4B5FD' : edge.isOverflow ? '#6366F1' : '#474563'}
+              lineWidth={isHighlighted ? 2.2 : edge.isOverflow ? 1.4 : 1.2}
+              dashed={edge.isOverflow}
+              dashScale={2}
+              dashSize={0.3}
+              gapSize={0.2}
               transparent
-              opacity={isSelectedBranch ? 0.95 : 0.45}
+              opacity={isDimmed ? 0.12 : isHighlighted ? 0.95 : 0.45}
             />
           );
         })}
 
       {/* Curved Dependency Relationship Edges in 3D */}
       {showDependencies &&
-        depEdges3D.map((dep) => (
-          <Line
-            key={`dep-3d-${dep.id}`}
-            points={dep.points}
-            color="#EC4899"
-            lineWidth={1.4}
-            dashed
-            dashScale={1.5}
-            dashSize={0.4}
-            gapSize={0.3}
-            transparent
-            opacity={0.7}
-          />
-        ))}
+        depEdges3D.map((dep) => {
+          const isDimmed = activeHighlightedIds && !dep.isHighlighted;
+          return (
+            <Line
+              key={dep.id}
+              points={dep.points}
+              color={dep.isHighlighted ? '#F472B6' : '#EC4899'}
+              lineWidth={dep.isHighlighted ? 2.2 : 1.4}
+              dashed
+              dashScale={1.5}
+              dashSize={0.4}
+              gapSize={0.3}
+              transparent
+              opacity={isDimmed ? 0.12 : dep.isHighlighted ? 0.95 : 0.7}
+            />
+          );
+        })}
 
       {/* 3D Nodes */}
-      {nodes.map((node) => {
+      {viewport.visibleNodes.map((node) => {
         const cluster = topLevelAncestor(node, allById);
         const color =
           node.kind === 'directory'
             ? getDirectoryColor(node.name)
             : CLUSTER_COLORS[hash(cluster.path) % CLUSTER_COLORS.length];
         const showLabel =
-          node.kind === 'project' ||
-          node.depth <= 1 ||
-          node.id === selectedId ||
-          node.id === hoveredId;
+          active &&
+          (node.id === viewport.focusNode.id ||
+            node.id === selectedId ||
+            node.id === hoveredId);
+
+        const pos = viewport.positions3D.get(node.id) ?? [0, 0, 0];
+        const isFocusRoot = node.id === viewport.focusNode.id;
 
         return (
           <GraphNode3D
             key={node.id}
             node={node}
+            position={pos}
             selected={node.id === selectedId}
             isHovered={node.id === hoveredId}
             color={color}
             showLabel={showLabel}
             reducedEffects={reducedEffects}
+            isFocusRoot={isFocusRoot}
             onSelect={() => select(node.id)}
+            onDrillDown={node.kind === 'directory' ? () => drillDownNode(node.id) : undefined}
             onOpen={node.kind === 'file' ? () => openFileViewer(node.id) : undefined}
             onPointerOver={() => setHoveredId(node.id)}
             onPointerOut={() => setHoveredId(null)}
@@ -464,7 +570,29 @@ function Scene({
         );
       })}
 
-      <CameraRig selectedPos={selectedPos} visibleNodes={nodes} reducedEffects={reducedEffects} />
+      {/* Overflow Indicators */}
+      {viewport.overflowNodes.map((overflow) => {
+        const pos = viewport.positions3D.get(overflow.id) ?? [0, 0, 0];
+        return (
+          <OverflowNode3D
+            key={overflow.id}
+            overflow={overflow}
+            position={pos}
+            active={active}
+            onOpenStructure={() => {
+              select(overflow.parentId);
+              setPage('structure');
+            }}
+          />
+        );
+      })}
+
+      <CameraRig
+        active={active}
+        selectedPos={selectedPos}
+        positions3D={viewport.positions3D}
+        reducedEffects={reducedEffects}
+      />
     </>
   );
 }
@@ -502,8 +630,10 @@ class WebGLErrorBoundary extends Component<
 }
 
 export function ProjectGraph({
+  active = true,
   relationshipMode = 'hierarchy',
 }: {
+  active?: boolean;
   relationshipMode?: RelationshipFilterMode;
 }) {
   const [reducedEffects, setReducedEffects] = useState(DEFAULT_PREFERENCES.reducedEffects);
@@ -512,19 +642,19 @@ export function ProjectGraph({
   const setMapMode = useAppStore((s) => s.setMapMode);
 
   useEffect(() => {
-    let active = true;
+    let isActive = true;
     void loadPreferences().then((preferences) => {
-      if (active) setReducedEffects(preferences.reducedEffects);
+      if (isActive) setReducedEffects(preferences.reducedEffects);
     });
     return () => {
-      active = false;
+      isActive = false;
     };
   }, []);
 
   if (hasWebGLError) {
     return (
       <div className="webgl-fallback">
-        <AlertTriangle size={36} className="text-amber-400" />
+        <AlertTriangle size={36} className="icon-warning" />
         <h2>3D Acceleration Unavailable</h2>
         <p>Hardware WebGL rendering could not be initialized or lost context in this browser environment.</p>
         <div className="fallback-actions">
@@ -543,9 +673,11 @@ export function ProjectGraph({
     <div className="graph-canvas">
       <WebGLErrorBoundary onFallback={() => setHasWebGLError(true)}>
         <Canvas
+          frameloop={active ? 'always' : 'never'}
           dpr={reducedEffects ? 1 : [1, 2]}
           camera={{ position: [0, 8, 17], fov: 52 }}
           onPointerMissed={(e) => {
+            if (!active) return;
             if (!e || (e.target as HTMLElement)?.tagName === 'CANVAS') {
               useAppStore.getState().selectNode(null);
             }
@@ -557,7 +689,7 @@ export function ProjectGraph({
             });
           }}
         >
-          <Scene reducedEffects={reducedEffects} relationshipMode={relationshipMode} />
+          <Scene active={active} reducedEffects={reducedEffects} relationshipMode={relationshipMode} />
         </Canvas>
       </WebGLErrorBoundary>
     </div>

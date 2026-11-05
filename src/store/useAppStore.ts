@@ -6,6 +6,7 @@ export type RelationshipFilterMode = 'hierarchy' | 'dependencies' | 'both';
 
 export interface HistoryEntry {
   nodeId: string | null;
+  mapFocusNodeId?: string | null;
   page: AppPage;
   previewFileId: string | null;
   mapMode?: MapMode;
@@ -15,10 +16,12 @@ interface AppState {
   page: AppPage;
   project: ProjectIndex | null;
   selectedNodeId: string | null;
+  mapFocusNodeId: string | null;
   mapMode: MapMode;
   relationshipMode: RelationshipFilterMode;
   expandedNodeIds: Set<string>;
   previewFileId: string | null;
+  isInspectorCollapsed: boolean;
   navigationHistory: HistoryEntry[];
   historyIndex: number;
 
@@ -26,11 +29,16 @@ interface AppState {
   setProject: (project: ProjectIndex) => void;
   clearProject: () => void;
   selectNode: (id: string | null, recordHistory?: boolean) => void;
+  setMapFocusNodeId: (id: string | null) => void;
+  drillDownNode: (id: string) => void;
+  navigateUpToParentFocus: () => void;
   setMapMode: (mode: MapMode) => void;
   setRelationshipMode: (mode: RelationshipFilterMode) => void;
   toggleExpandNode: (id: string) => void;
   expandNode: (id: string) => void;
   collapseNode: (id: string) => void;
+  setInspectorCollapsed: (collapsed: boolean) => void;
+  toggleInspector: () => void;
   openFileViewer: (nodeId: string) => void;
   closeFileViewer: () => void;
   navigateBack: () => void;
@@ -43,10 +51,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   page: 'projects',
   project: null,
   selectedNodeId: null,
+  mapFocusNodeId: null,
   mapMode: '2d',
   relationshipMode: 'hierarchy',
   expandedNodeIds: new Set<string>(),
   previewFileId: null,
+  isInspectorCollapsed: false,
   navigationHistory: [],
   historyIndex: -1,
 
@@ -68,6 +78,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...currentHistory,
         {
           nodeId: state.selectedNodeId,
+          mapFocusNodeId: state.mapFocusNodeId,
           page,
           previewFileId: state.previewFileId,
           mapMode: state.mapMode,
@@ -84,19 +95,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setProject: (project) => {
     const rootId = project.nodes[0]?.id ?? null;
-    // By default, top-level directories start expanded for quick exploration
+    // Release rule #8: Do NOT auto-expand every depth-1 directory!
+    // Start with a clean, unexploded overview with only root expanded.
     const initialExpanded = new Set<string>();
     if (rootId) {
       initialExpanded.add(rootId);
-      for (const node of project.nodes) {
-        if (node.depth === 1 && node.kind === 'directory') {
-          initialExpanded.add(node.id);
-        }
-      }
     }
 
     const initialHistory: HistoryEntry[] = rootId
-      ? [{ nodeId: rootId, page: 'graph', previewFileId: null, mapMode: '2d' }]
+      ? [{ nodeId: rootId, mapFocusNodeId: rootId, page: 'graph', previewFileId: null, mapMode: '2d' }]
       : [];
 
     set({
@@ -104,6 +111,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       page: 'graph',
       mapMode: '2d', // GEMINI.md Section 10: New/opened projects strictly default to 2D
       selectedNodeId: rootId,
+      mapFocusNodeId: rootId,
       previewFileId: null,
       expandedNodeIds: initialExpanded,
       navigationHistory: initialHistory,
@@ -115,13 +123,53 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       project: null,
       selectedNodeId: null,
+      mapFocusNodeId: null,
       previewFileId: null,
       mapMode: '2d',
       expandedNodeIds: new Set(),
+      isInspectorCollapsed: false,
       navigationHistory: [],
       historyIndex: -1,
       page: 'projects',
     }),
+
+  setMapFocusNodeId: (mapFocusNodeId) => {
+    set({ mapFocusNodeId });
+  },
+
+  drillDownNode: (id) => {
+    const state = get();
+    const node = state.project?.nodes.find((n) => n.id === id);
+    if (!node) return;
+
+    if (node.kind === 'directory' || node.kind === 'project') {
+      const nextExpanded = new Set(state.expandedNodeIds);
+      nextExpanded.add(id);
+      set({
+        mapFocusNodeId: id,
+        selectedNodeId: id,
+        expandedNodeIds: nextExpanded,
+      });
+    } else {
+      set({ selectedNodeId: id });
+    }
+  },
+
+  navigateUpToParentFocus: () => {
+    const state = get();
+    if (!state.project || !state.mapFocusNodeId) return;
+    const currentFocus = state.project.nodes.find((n) => n.id === state.mapFocusNodeId);
+    if (currentFocus?.parentId) {
+      set({
+        mapFocusNodeId: currentFocus.parentId,
+        selectedNodeId: currentFocus.parentId,
+      });
+    }
+  },
+
+  setInspectorCollapsed: (isInspectorCollapsed) => set({ isInspectorCollapsed }),
+
+  toggleInspector: () => set((state) => ({ isInspectorCollapsed: !state.isInspectorCollapsed })),
 
   selectNode: (selectedNodeId, recordHistory = true) => {
     const state = get();
@@ -254,6 +302,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
+          ...(entry.mapFocusNodeId !== undefined ? { mapFocusNodeId: entry.mapFocusNodeId } : {}),
           page: entry.page,
           previewFileId: entry.previewFileId,
           ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),
@@ -271,6 +320,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
+          ...(entry.mapFocusNodeId !== undefined ? { mapFocusNodeId: entry.mapFocusNodeId } : {}),
           page: entry.page,
           previewFileId: entry.previewFileId,
           ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),

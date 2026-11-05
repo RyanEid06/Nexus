@@ -1,44 +1,83 @@
-import { FileCode2, Folder, FolderOpen, Network } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileCode2, Folder, FolderOpen, Network } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { compactBytes } from '../utils/fileTypes';
 
 export function Inspector() {
   const project = useAppStore((s) => s.project);
   const selectedId = useAppStore((s) => s.selectedNodeId);
+  const isCollapsed = useAppStore((s) => s.isInspectorCollapsed);
+  const toggleInspector = useAppStore((s) => s.toggleInspector);
   const setPage = useAppStore((s) => s.setPage);
-  if (!project) return <aside className="inspector" />;
-  const node = project.nodes.find((item) => item.id === selectedId) ?? project.nodes[0];
-  const children = project.nodes.filter((item) => item.parentId === node?.id);
-  if (!node) return <aside className="inspector" />;
 
+  if (!project) {
+    return <aside className="inspector" />;
+  }
+
+  const node = project.nodes.find((item) => item.id === selectedId) ?? project.nodes[0];
+  if (!node) {
+    return <aside className="inspector" />;
+  }
+
+  // Collapsed ribbon: returns space to the Map while preserving selection
+  if (isCollapsed) {
+    return (
+      <aside className="inspector-collapsed-ribbon" aria-label="Inspector collapsed">
+        <button
+          className="inspector-toggle-btn"
+          onClick={toggleInspector}
+          title="Expand inspector panel"
+          aria-label="Expand inspector panel"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span className="collapsed-inspector-label">Inspector</span>
+      </aside>
+    );
+  }
+
+  const children = project.nodes.filter((item) => item.parentId === node.id);
   const Icon = node.kind === 'project' ? Network : node.kind === 'directory' ? FolderOpen : FileCode2;
   const fileCount = node.kind === 'file' ? 1 : node.descendantFiles ?? 0;
 
   // Compute dependency info for file
-  const outgoingCount = node.kind === 'file' && project.dependencies
-    ? project.dependencies.edges.filter((e) => e.sourcePath === node.path).length
-    : 0;
-  const incomingCount = node.kind === 'file' && project.dependencies
-    ? project.dependencies.edges.filter(
-        (e) => e.targetResolvedPath === node.path || (!e.isExternal && e.isResolved && e.targetPath === node.path)
-      ).length
-    : 0;
+  const outgoingCount =
+    node.kind === 'file' && project.dependencies
+      ? project.dependencies.edges.filter((e) => e.sourcePath === node.path).length
+      : 0;
+  const incomingCount =
+    node.kind === 'file' && project.dependencies
+      ? project.dependencies.edges.filter(
+          (e) => e.targetResolvedPath === node.path || (!e.isExternal && e.isResolved && e.targetPath === node.path)
+        ).length
+      : 0;
 
   return (
-    <aside className="inspector">
-      <div className="inspector-title">
-        <span className="icon-box">
-          <Icon size={20} />
-        </span>
-        <div>
-          <h2>{node.name}</h2>
-          <p>{node.kind}</p>
+    <aside className="inspector" aria-label="Node inspector">
+      <div className="inspector-header-row">
+        <div className="inspector-title">
+          <span className="icon-box">
+            <Icon size={20} />
+          </span>
+          <div>
+            <h2>{node.name}</h2>
+            <p>{node.kind}</p>
+          </div>
         </div>
+
+        <button
+          className="inspector-collapse-btn"
+          onClick={toggleInspector}
+          title="Collapse inspector panel"
+          aria-label="Collapse inspector panel"
+        >
+          <ChevronRight size={16} />
+        </button>
       </div>
+
       <dl className="details">
         <div>
           <dt>Path</dt>
-          <dd>{node.path}</dd>
+          <dd>{node.path || '(root)'}</dd>
         </div>
         <div>
           <dt>Files</dt>
@@ -111,15 +150,16 @@ export function Inspector() {
 
       <h3>Direct child items ({children.length})</h3>
       <div className="child-list">
-        {children.slice(0, 12).map((child) => (
+        {/* Short preview of at most 8 items to prevent panel domination (Section 15) */}
+        {children.slice(0, 8).map((child) => (
           <button
             key={child.id}
             onClick={() => useAppStore.getState().selectNode(child.id)}
             onDoubleClick={() => {
               if (child.kind === 'file') useAppStore.getState().openFileViewer(child.id);
-              else useAppStore.getState().toggleExpandNode(child.id);
+              else useAppStore.getState().drillDownNode(child.id);
             }}
-            title={child.kind === 'file' ? 'Click to select · Double-click to open' : 'Click to select'}
+            title={child.kind === 'file' ? 'Click to select · Double-click to open' : 'Click to select · Double-click to explore'}
           >
             {child.kind === 'directory' ? <Folder size={15} /> : <FileCode2 size={15} />}
             <span>{child.name}</span>
@@ -127,7 +167,7 @@ export function Inspector() {
           </button>
         ))}
         {!children.length && <p className="muted">No child items.</p>}
-        {children.length > 12 && (
+        {children.length > 8 && (
           <button
             className="view-all-children-btn"
             onClick={() => {
@@ -143,5 +183,3 @@ export function Inspector() {
     </aside>
   );
 }
-
-

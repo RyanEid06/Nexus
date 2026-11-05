@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, Box, CheckCircle2, FolderOpen, AlertTriangle, Plus, RefreshCw, Trash2, Unplug } from 'lucide-react';
-import type { ProjectIndex } from '../domain/models';
+import { SCANNER_ANALYSIS_VERSION, type ProjectIndex } from '../domain/models';
 import { demoProject } from '../data/demoProject';
 import {
   getProjectHandle,
@@ -242,6 +242,11 @@ export function ProjectsPage() {
                     <Box />
                   </span>
                   <div className="status-badges">
+                    {(project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION && (
+                      <span className="card-badge index-needs-refresh" title="Project was indexed with an older analysis version; refresh recommended">
+                        <RefreshCw size={10} /> Index needs refresh
+                      </span>
+                    )}
                     {status === 'connected' && (
                       <span className="card-badge connected" title="Direct folder access active">
                         <CheckCircle2 size={10} /> Connected

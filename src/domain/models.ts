@@ -9,9 +9,22 @@ export interface RawSpecifier {
   type: DependencyType;
 }
 
-export const SCANNER_ANALYSIS_VERSION = 1;
+export const SCANNER_ANALYSIS_VERSION = 2;
 export const DEPENDENCY_PARSER_VERSION = 2;
 export const DEPENDENCY_RESOLVER_VERSION = 2;
+
+export type ScanPhase = 'discovering' | 'analyzing' | 'building-relationships' | 'saving' | 'complete';
+
+export interface ScanProgress {
+  phase: ScanPhase;
+  discovered: number;
+  totalToAnalyze?: number;
+  analyzed: number;
+  reused: number;
+  warnings: number;
+  currentPath: string;
+  percentage?: number;
+}
 
 export interface ProjectAnalysisConfig {
   selectedCategories: AnalysisCategory[];
@@ -20,6 +33,7 @@ export interface ProjectAnalysisConfig {
   scannerAnalysisVersion: number;
   dependencyParserVersion: number;
   dependencyResolverVersion: number;
+  customExcludedPaths?: string[];
 }
 
 export interface DependencyEdge {

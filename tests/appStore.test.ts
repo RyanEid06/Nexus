@@ -37,14 +37,17 @@ describe('App Store & Graph State', () => {
     useAppStore.getState().clearProject();
   });
 
-  it('initializes with 2D mode, hierarchy filter, and expands depth-1 directories', () => {
+  it('initializes with 2D mode, hierarchy filter, mapFocusNodeId at root, and does not auto-expand depth-1 directories', () => {
     useAppStore.getState().setProject(mockProject);
     const state = useAppStore.getState();
 
     expect(state.mapMode).toBe('2d');
     expect(state.relationshipMode).toBe('hierarchy');
     expect(state.selectedNodeId).toBe('root');
-    expect(state.expandedNodeIds.has('src')).toBe(true);
+    expect(state.mapFocusNodeId).toBe('root');
+    expect(state.expandedNodeIds.has('root')).toBe(true);
+    // Requirement #8: Depth-1 directories must NOT be auto-expanded
+    expect(state.expandedNodeIds.has('src')).toBe(false);
   });
 
   it('switching 2D/3D preserves selected node and expanded branches', () => {

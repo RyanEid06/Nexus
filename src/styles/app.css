@@ -1696,5 +1696,284 @@
   margin-top: 14px;
 }
 
+/* ==========================================================================
+   Canvas Layer Isolation (Release Invariant #1)
+   ========================================================================== */
+
+.graph-canvas-layer {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+.graph-canvas-layer.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 2;
+}
+.graph-canvas-layer.is-inactive {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ==========================================================================
+   Map Focus, Breadcrumbs & Context Affordances (Release Invariants #4, #5, #16)
+   ========================================================================== */
+
+.map-breadcrumbs-bar {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(12, 13, 20, 0.92);
+  border: 1px solid #2B2D40;
+  border-radius: 8px;
+  padding: 5px 12px;
+  backdrop-filter: blur(12px);
+  z-index: 20;
+  max-width: calc(100% - 320px);
+}
+.map-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1C1E2E;
+  border: 1px solid #343750;
+  color: #C4B5FD;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.map-back-btn:hover {
+  background: #282B44;
+  color: white;
+  border-color: #8B5CF6;
+}
+.map-breadcrumb-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.map-breadcrumb-btn {
+  background: transparent;
+  border: 0;
+  color: #9CA3AF;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.map-breadcrumb-btn:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.05);
+}
+.map-breadcrumb-btn.current {
+  color: #EDE9FE;
+  font-weight: 600;
+  background: rgba(139, 92, 246, 0.2);
+}
+.map-breadcrumb-sep {
+  color: #4B5563;
+  font-size: 10px;
+}
+.map-status-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #9CA3AF;
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid #2A2C3D;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.map-status-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #1F2236;
+  color: #CBD5E1;
+}
+
+/* Focused Directory Central Hub (when mapFocusNodeId is a directory) */
+.node-2d-focused-dir {
+  position: absolute;
+  width: 140px;
+  height: 140px;
+  margin-left: -70px;
+  margin-top: -70px;
+  border-radius: 999px;
+  background: radial-gradient(circle, #1F1538 0%, #131322 65%, #0B0A14 100%);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  z-index: 10;
+}
+.node-2d-focused-dir:hover,
+.node-2d-focused-dir.selected {
+  transform: scale(1.06);
+}
+
+/* ==========================================================================
+   Collapsible Inspector Affordance (Release Invariant #15)
+   ========================================================================== */
+
+.workspace.inspector-collapsed {
+  grid-template-columns: minmax(760px, 1fr) 40px;
+}
+.inspector-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.inspector-collapse-btn {
+  background: #171826;
+  border: 1px solid #282A3D;
+  color: #A78BFA;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.inspector-collapse-btn:hover {
+  background: #251E3E;
+  color: white;
+  border-color: #8B5CF6;
+}
+.inspector-collapsed-ribbon {
+  border-left: 1px solid var(--border);
+  background: #0F1018;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 0;
+  gap: 18px;
+  user-select: none;
+}
+.collapsed-inspector-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: #72778E;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Project Analysis Calm Progress & Stability (Release Invariant #18)
+   ========================================================================== */
+
+.import-card {
+  width: 920px;
+  max-width: 92vw;
+  box-sizing: border-box;
+}
+.scan-progress-box {
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 14px;
+}
+.progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: #171826;
+  border: 1px solid #282A3D;
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8B5CF6, #A78BFA);
+  border-radius: 999px;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+  transition: width 0.12s linear;
+}
+.progress-bar-indeterminate {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent 0%, #8B5CF6 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: indeterminate-slide 1.5s infinite linear;
+}
+@keyframes indeterminate-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar-indeterminate {
+    animation: none;
+    background: #8B5CF6;
+    opacity: 0.7;
+  }
+}
+.progress-phase-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.progress-path-text {
+  font-size: 11px;
+  color: #737789;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.progress-stats-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #CBD5E1;
+  font-variant-numeric: tabular-nums;
+}
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Semantic Theme Colors (Replacing Dead Tailwind Utility Classes)
+   ========================================================================== */
+
+.warning-text { color: #FBBF24; }
+.warning-heading { color: #FBBF24; display: flex; align-items: center; gap: 8px; }
+.icon-warning { color: #FBBF24; }
+.icon-purple { color: #C084FC; }
+.icon-cyan { color: #22D3EE; }
+.icon-indigo { color: #818CF8; }
+.icon-success { color: #34D399; }
+
+.index-needs-refresh {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.08);
+  color: #FBBF24;
+}
+
 
 
