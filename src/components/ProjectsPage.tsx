@@ -3,7 +3,6 @@ import { AlertCircle, Box, CheckCircle2, FolderOpen, AlertTriangle, Plus, Refres
 import type { ProjectIndex } from '../domain/models';
 import { demoProject } from '../data/demoProject';
 import {
-  attachProjectHandle,
   getProjectHandle,
   getProjectHandleStatus,
   type HandleConnectionStatus,
@@ -12,6 +11,7 @@ import {
   removeProject,
   requestProjectPermission,
   saveProject,
+  validateRelocationCandidate,
 } from '../storage/db';
 import { pickLocalProjectDirectory, scanDirectoryHandle, supportsLocalDirectoryPicker } from '../services/projectScanner';
 import { useAppStore } from '../store/useAppStore';
@@ -65,8 +65,13 @@ export function ProjectsPage() {
   }, [refreshList]);
 
   async function openProject(id: string) {
-    const project = await loadProject(id);
-    if (project) setProject(project);
+    try {
+      setLoadError('');
+      const project = await loadProject(id);
+      if (project) setProject(project);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to open project.');
+    }
   }
 
   async function handleRefreshOrReconnect(id: string, e: React.MouseEvent) {
@@ -112,10 +117,20 @@ export function ProjectsPage() {
     setLoadError('');
 
     try {
-      const newHandle = await pickLocalProjectDirectory();
-      await attachProjectHandle(id, newHandle);
       const prevProject = await loadProject(id);
+      if (!prevProject) {
+        setLoadError('Cannot relocate: project index not found.');
+        return;
+      }
+
+      const newHandle = await pickLocalProjectDirectory();
+      // Safely inspect candidate handle before mutating database
+      await validateRelocationCandidate(prevProject, newHandle);
+
+      // Perform scan with previous project data for continuity
       const updated = await scanDirectoryHandle(newHandle, { previousProject: prevProject });
+
+      // Only save project and attach handle after successful validation and scan!
       await saveProject(updated, newHandle);
 
       if (currentProject?.id === id) {
@@ -132,9 +147,14 @@ export function ProjectsPage() {
   }
 
   async function confirmRemove(id: string) {
-    await removeProject(id);
-    setDeleteConfirmId(null);
-    await refreshList();
+    try {
+      setLoadError('');
+      await removeProject(id);
+      setDeleteConfirmId(null);
+      await refreshList();
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to remove project.');
+    }
   }
 
   return (

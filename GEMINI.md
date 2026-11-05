@@ -17,23 +17,26 @@ NEXUS V1 is a **desktop-first, local-first 3D codebase visualizer and architectu
 - **Direct Directory Picking**: Native `showDirectoryPicker()` with `supportsLocalDirectoryPicker()` feature detection. Informational banner displayed when run on non-Chromium browsers.
 - **Safety Limits**: Automatic skips on binary and sensitive files (`.env*`, `*.pem`, `*.key`, `id_rsa`) ensuring their raw contents are never read into memory. Read-size thresholds (`maxTextFileBytes`) for huge files.
 - **Fatal Error Handling**: `RootAccessError` prevents empty ghost projects when root handle cannot be iterated. `ScanLimitError` prevents incomplete scans from being saved as complete projects.
-- **Incremental Refresh**: When refreshing existing projects, unchanged files (`sizeBytes` + `modifiedAt` matching) reuse cached metrics and dependency edges without reading file contents from disk. Modified files are parsed freshly, and deleted files are pruned.
-- **Yielding Traversal**: Traversal yields to the browser event loop to prevent main thread starvation during large repository scans.
+- **Persisted Analysis Configuration**: Project-specific analysis configuration persists selected categories (`source`, `configuration`, `documentation`, `test`), `maxTextFileBytes`, and cache versions (`scannerAnalysisVersion`, `dependencyParserVersion`, `dependencyResolverVersion`).
+- **Incremental Refresh & Raw Specifier Caching**: Unchanged files reuse cached raw import specifiers without reading file contents from disk. Dependency resolution against the current project file set and aliases is always recomputed.
+- **Off-Thread Web Worker**: CPU-heavy token-aware parsing and graph resolution run in a Vite module Web Worker with bounded batching and AbortSignal cancellation.
 
 ### 2. Dependency Analysis Engine
-- **Lexical Import Extraction**: Scans TypeScript and JavaScript source files for ESM `import`, dynamic `import()`, `export ... from`, side-effect imports, and CommonJS `require()`.
-- **Path Resolution**: Resolves relative paths (`./`, `../`), default file extensions (`.ts`, `.tsx`, `.js`, `.jsx`), directory index files (`/index.ts`, `/index.js`), `baseUrl`, and `tsconfig.json` path mappings.
-- **External Package Classification**: Groups non-relative imports into external packages and counts importing files.
-- **Circular Dependency Detection**: Implements Tarjan's / DFS cycle detection to identify circular import loops with full file chains.
+- **Token-Aware Lexical Parsing**: Robust multi-line scanning for TypeScript and JavaScript source files extracting static ESM `import`, multiline `import`, default + named, `import type`, dynamic `import()`, `export ... from`, side-effect imports, and CommonJS `require()`. Comments and strings containing fake imports are safely skipped.
+- **JSONC Tsconfig & Path Resolution**: Full comment and trailing-comma support for `tsconfig.json`/`jsconfig.json`. Resolves canonical project-relative paths, default extensions (`.ts`, `.tsx`, `.js`, `.jsx`), index files, `baseUrl`, and `paths` mappings.
+- **External Package Classification**: Groups non-relative imports into external packages and tracks importing files.
+- **Circular Dependency Detection (Tarjan SCC)**: Real Tarjan's Strongly Connected Components algorithm identifying circular dependency groups of size > 1 and module self-loops.
 - **Shortest Path Finder**: Computes shortest import paths between any two modules using breadth-first search (BFS).
 
-### 3. Local Storage & Reconnection Lifecycle
-- **IndexedDB**: Version 3 schema storing compact project metadata, hierarchy nodes, serializable directory handles, and user preferences.
+### 3. Local Storage & Safe Relocation
+- **IndexedDB**: Version 3 schema storing compact project metadata, hierarchy nodes, serializable directory handles, and user preferences with typed `StorageError` handling.
 - **Handle States**: Cards display real handle states (`connected`, `permission-required`, `unavailable`).
+- **Safe Relocation**: Structural validation (`validateRelocationCandidate`) inspects candidate directories to prevent accidental overwrite of existing project identities. Stored handles are only attached after successful scan.
+- **Truthful Error Handling**: Database failures surface typed error messages in the UI rather than producing empty lists or fake save confirmations.
 - **User Actions**:
-  - `connected`: One-click incremental Refresh.
+  - `connected`: One-click incremental Refresh preserving project configuration.
   - `permission-required`: Direct user-gesture Reconnect requesting read permission.
-  - `unavailable`: Relocate Folder action allowing the user to re-link relocated folders.
+  - `unavailable`: Relocate Folder action with structural validation.
   - Deletion: In-place confirmation safeguard ("Delete cached index?") ensuring safe removal from IndexedDB while never touching files on disk.
 
 ### 4. 3D Spatial Graph & Tree Views

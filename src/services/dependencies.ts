@@ -1,24 +1,19 @@
 /**
  * NEXUS TypeScript/JavaScript Dependency Parser & Resolution Engine
- * 100% Client-side, deterministic, zero-fake-data.
- * Parses real static/dynamic imports, exports, and requires.
+ * Token-aware lexical scanning, canonical project-relative resolution,
+ * and Tarjan's Strongly Connected Components (SCC) circular dependency detection.
  */
 
-import type { DependencyEdge, DependencyGraphData, DependencyType } from '../domain/models';
+import type { DependencyEdge, DependencyGraphData, DependencyType, RawSpecifier } from '../domain/models';
+import { parseTsConfigAliases, type TsConfigAliases } from '../utils/jsonc';
 
-export interface RawSpecifier {
-  specifier: string;
-  type: DependencyType;
-}
-
-export interface TsConfigAliases {
-  baseUrl?: string;
-  paths?: Record<string, string[]>;
-}
+export type { RawSpecifier, TsConfigAliases, DependencyType };
+export { parseTsConfigAliases };
 
 /**
  * Normalizes a POSIX relative path:
  * Removes redundant '.', '..', and duplicate slashes.
+ * Returns clean relative path without leading slash.
  */
 export function normalizeRelativePath(path: string): string {
   if (!path) return '';
@@ -65,184 +60,307 @@ export function extractPackageName(specifier: string): string {
   return specifier.split('/')[0];
 }
 
+function isIdentifierChar(ch: string): boolean {
+  return /[a-zA-Z0-9_$]/.test(ch);
+}
+
 /**
- * Parses raw import/export/require specifiers from TS/JS source code.
- * Uses an efficient single-pass lexical scanner that ignores comments and non-import strings.
+ * Token-aware lexical scanner to extract import, export-from, and require specifiers.
+ * Completely immune to comments, strings containing fake imports, template literals,
+ * multiline formatting, and escaped quotes.
  */
 export function extractSpecifiers(sourceText: string): RawSpecifier[] {
   const results: RawSpecifier[] = [];
   const len = sourceText.length;
   let i = 0;
 
+  function skipWhitespaceAndComments(): void {
+    while (i < len) {
+      const ch = sourceText[i];
+      const next = i + 1 < len ? sourceText[i + 1] : '';
+
+      if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+        i++;
+        continue;
+      }
+
+      // Single-line comment
+      if (ch === '/' && next === '/') {
+        i += 2;
+        while (i < len && sourceText[i] !== '\n' && sourceText[i] !== '\r') {
+          i++;
+        }
+        continue;
+      }
+
+      // Multi-line comment
+      if (ch === '/' && next === '*') {
+        i += 2;
+        while (i < len && !(sourceText[i] === '*' && i + 1 < len && sourceText[i + 1] === '/')) {
+          i++;
+        }
+        i += 2;
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  function readString(): string | null {
+    if (i >= len) return null;
+    const quote = sourceText[i];
+    if (quote !== '"' && quote !== "'") return null;
+    i++;
+    let val = '';
+    while (i < len) {
+      const ch = sourceText[i];
+      if (ch === '\\' && i + 1 < len) {
+        val += sourceText[i + 1];
+        i += 2;
+      } else if (ch === quote) {
+        i++;
+        return val;
+      } else {
+        val += ch;
+        i++;
+      }
+    }
+    return null;
+  }
+
+  function skipNormalString(quote: string): void {
+    i++;
+    while (i < len) {
+      const ch = sourceText[i];
+      if (ch === '\\' && i + 1 < len) {
+        i += 2;
+      } else if (ch === quote) {
+        i++;
+        break;
+      } else {
+        i++;
+      }
+    }
+  }
+
+  function skipTemplateLiteral(): void {
+    i++; // skip initial `
+    while (i < len) {
+      const ch = sourceText[i];
+      if (ch === '\\' && i + 1 < len) {
+        i += 2;
+      } else if (ch === '`') {
+        i++;
+        break;
+      } else if (ch === '$' && i + 1 < len && sourceText[i + 1] === '{') {
+        // Embedded JS expression inside template literal!
+        // Recursively scan JS expression until matching closing }
+        i += 2;
+        let braceDepth = 1;
+        while (i < len && braceDepth > 0) {
+          skipWhitespaceAndComments();
+          if (i >= len) break;
+          const exprCh = sourceText[i];
+          if (exprCh === '{') {
+            braceDepth++;
+            i++;
+          } else if (exprCh === '}') {
+            braceDepth--;
+            i++;
+          } else if (exprCh === '"' || exprCh === "'") {
+            skipNormalString(exprCh);
+          } else if (exprCh === '`') {
+            skipTemplateLiteral();
+          } else if (exprCh === 'i' && sourceText.startsWith('import', i) && !isIdentifierChar(sourceText[i + 6] || '')) {
+            // Dynamic import inside template expression!
+            i += 6;
+            skipWhitespaceAndComments();
+            if (sourceText[i] === '(') {
+              i++;
+              skipWhitespaceAndComments();
+              const spec = readString();
+              if (spec !== null) {
+                results.push({ specifier: spec, type: 'dynamic-import' });
+              }
+            }
+          } else {
+            i++;
+          }
+        }
+      } else {
+        i++;
+      }
+    }
+  }
+
+  let prevChar = '';
+
   while (i < len) {
+    skipWhitespaceAndComments();
+    if (i >= len) break;
+
     const ch = sourceText[i];
 
-    // Single-line comment: skip to newline
-    if (ch === '/' && sourceText[i + 1] === '/') {
-      i += 2;
-      while (i < len && sourceText[i] !== '\n' && sourceText[i] !== '\r') {
-        i += 1;
-      }
+    // String literals outside import: skip safely
+    if (ch === '"' || ch === "'") {
+      skipNormalString(ch);
+      prevChar = ch;
       continue;
     }
 
-    // Multi-line comment: skip to */
-    if (ch === '/' && sourceText[i + 1] === '*') {
-      i += 2;
-      while (i < len && !(sourceText[i] === '*' && sourceText[i + 1] === '/')) {
-        i += 1;
-      }
-      i += 2;
+    // Template literals: skip safely
+    if (ch === '`') {
+      skipTemplateLiteral();
+      prevChar = ch;
       continue;
     }
 
-    // String literals not part of an import/require: skip string content safely
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch;
-      i += 1;
-      while (i < len && sourceText[i] !== quote) {
-        if (sourceText[i] === '\\') i += 1; // escape
-        i += 1;
+    // Check for "require" keyword
+    if (ch === 'r' && sourceText.startsWith('require', i) && !isIdentifierChar(sourceText[i + 7] || '')) {
+      const isMethodCall = prevChar === '.';
+      i += 7;
+      if (!isMethodCall) {
+        skipWhitespaceAndComments();
+        if (sourceText[i] === '(') {
+          i++;
+          skipWhitespaceAndComments();
+          const spec = readString();
+          if (spec !== null) {
+            results.push({ specifier: spec, type: 'require' });
+          }
+        }
       }
-      i += 1;
+      prevChar = 'e';
       continue;
     }
 
     // Check for "import" keyword
-    if (sourceText.startsWith('import', i) && isWordBoundary(sourceText, i, 6)) {
-      const start = i;
+    if (ch === 'i' && sourceText.startsWith('import', i) && !isIdentifierChar(sourceText[i + 6] || '')) {
+      const isMember = prevChar === '.';
       i += 6;
-      // Scan forward to determine import pattern
-      // Pattern 1: dynamic import(...)
-      let k = i;
-      while (k < len && (sourceText[k] === ' ' || sourceText[k] === '\t' || sourceText[k] === '\n' || sourceText[k] === '\r')) k += 1;
-      if (sourceText[k] === '(') {
-        k += 1;
-        while (k < len && (sourceText[k] === ' ' || sourceText[k] === '\t' || sourceText[k] === '\n' || sourceText[k] === '\r')) k += 1;
-        if (sourceText[k] === '"' || sourceText[k] === "'") {
-          const spec = readStringLiteral(sourceText, k);
-          if (spec) {
-            results.push({ specifier: spec.value, type: 'dynamic-import' });
-            i = spec.endIndex;
+      if (!isMember) {
+        skipWhitespaceAndComments();
+
+        // Pattern 1: dynamic import('...')
+        if (sourceText[i] === '(') {
+          i++;
+          skipWhitespaceAndComments();
+          const spec = readString();
+          if (spec !== null) {
+            results.push({ specifier: spec, type: 'dynamic-import' });
+          }
+          prevChar = ')';
+          continue;
+        }
+
+        // Pattern 2: side-effect import '...'
+        if (sourceText[i] === '"' || sourceText[i] === "'") {
+          const spec = readString();
+          if (spec !== null) {
+            results.push({ specifier: spec, type: 'side-effect' });
+          }
+          prevChar = ';';
+          continue;
+        }
+
+        // Pattern 3: static import (single-line or multiline, with or without 'type')
+        // Scan forward looking for 'from' keyword before next top-level statement
+        let foundFrom = false;
+        while (i < len) {
+          skipWhitespaceAndComments();
+          if (i >= len) break;
+
+          const curr = sourceText[i];
+
+          // If statement ended with semicolon without 'from', stop
+          if (curr === ';') {
+            i++;
+            break;
+          }
+
+          // Skip string literals inside import clause
+          if (curr === '"' || curr === "'") {
+            skipNormalString(curr);
             continue;
+          }
+
+          // Check for 'from' keyword
+          if (curr === 'f' && sourceText.startsWith('from', i) && !isIdentifierChar(sourceText[i + 4] || '')) {
+            i += 4;
+            foundFrom = true;
+            break;
+          }
+
+          i++;
+        }
+
+        if (foundFrom) {
+          skipWhitespaceAndComments();
+          const spec = readString();
+          if (spec !== null) {
+            results.push({ specifier: spec, type: 'static-import' });
           }
         }
       }
-
-      // Pattern 2: import 'side-effect' or import "side-effect"
-      if (sourceText[k] === '"' || sourceText[k] === "'") {
-        const spec = readStringLiteral(sourceText, k);
-        if (spec) {
-          results.push({ specifier: spec.value, type: 'side-effect' });
-          i = spec.endIndex;
-          continue;
-        }
-      }
-
-      // Pattern 3: static import ... from 'specifier'
-      const lineEnd = findStatementEnd(sourceText, start);
-      const segment = sourceText.slice(start, lineEnd);
-      const fromMatch = segment.match(/\bfrom\s*['"]([^'"]+)['"]/);
-      if (fromMatch && fromMatch[1]) {
-        results.push({ specifier: fromMatch[1], type: 'static-import' });
-        i = lineEnd;
-        continue;
-      }
+      prevChar = 't';
+      continue;
     }
 
     // Check for "export" keyword
-    if (sourceText.startsWith('export', i) && isWordBoundary(sourceText, i, 6)) {
-      const start = i;
+    if (ch === 'e' && sourceText.startsWith('export', i) && !isIdentifierChar(sourceText[i + 6] || '')) {
       i += 6;
-      const lineEnd = findStatementEnd(sourceText, start);
-      const segment = sourceText.slice(start, lineEnd);
-      const fromMatch = segment.match(/\bfrom\s*['"]([^'"]+)['"]/);
-      if (fromMatch && fromMatch[1]) {
-        results.push({ specifier: fromMatch[1], type: 'export-from' });
-        i = lineEnd;
-        continue;
-      }
-    }
+      skipWhitespaceAndComments();
 
-    // Check for "require(" keyword
-    if (sourceText.startsWith('require', i) && isWordBoundary(sourceText, i, 7)) {
-      i += 7;
-      let k = i;
-      while (k < len && (sourceText[k] === ' ' || sourceText[k] === '\t' || sourceText[k] === '\n' || sourceText[k] === '\r')) k += 1;
-      if (sourceText[k] === '(') {
-        k += 1;
-        while (k < len && (sourceText[k] === ' ' || sourceText[k] === '\t' || sourceText[k] === '\n' || sourceText[k] === '\r')) k += 1;
-        if (sourceText[k] === '"' || sourceText[k] === "'") {
-          const spec = readStringLiteral(sourceText, k);
-          if (spec) {
-            results.push({ specifier: spec.value, type: 'require' });
-            i = spec.endIndex;
-            continue;
-          }
+      // Check if this is a re-export: export ... from '...'
+      let foundFrom = false;
+      while (i < len) {
+        skipWhitespaceAndComments();
+        if (i >= len) break;
+
+        const curr = sourceText[i];
+
+        // Semicolon or new declaration keyword marks end
+        if (curr === ';') {
+          i++;
+          break;
+        }
+
+        if (curr === '"' || curr === "'") {
+          skipNormalString(curr);
+          continue;
+        }
+
+        if (curr === 'f' && sourceText.startsWith('from', i) && !isIdentifierChar(sourceText[i + 4] || '')) {
+          i += 4;
+          foundFrom = true;
+          break;
+        }
+
+        i++;
+      }
+
+      if (foundFrom) {
+        skipWhitespaceAndComments();
+        const spec = readString();
+        if (spec !== null) {
+          results.push({ specifier: spec, type: 'export-from' });
         }
       }
+
+      prevChar = 't';
+      continue;
     }
 
-    i += 1;
+    prevChar = ch;
+    i++;
   }
 
   return results;
 }
 
-function isWordBoundary(text: string, index: number, length: number): boolean {
-  const prev = index > 0 ? text[index - 1] : ' ';
-  const next = index + length < text.length ? text[index + length] : ' ';
-  const isWordChar = (c: string) => /[a-zA-Z0-9_$]/.test(c);
-  return !isWordChar(prev) && !isWordChar(next);
-}
-
-function readStringLiteral(text: string, startIndex: number): { value: string; endIndex: number } | null {
-  const quote = text[startIndex];
-  if (quote !== '"' && quote !== "'") return null;
-  let val = '';
-  let i = startIndex + 1;
-  while (i < text.length && text[i] !== quote) {
-    if (text[i] === '\\' && i + 1 < text.length) {
-      val += text[i + 1];
-      i += 2;
-    } else {
-      val += text[i];
-      i += 1;
-    }
-  }
-  return { value: val, endIndex: i + 1 };
-}
-
-function findStatementEnd(text: string, start: number): number {
-  let i = start;
-  while (i < text.length && text[i] !== ';' && text[i] !== '\n') {
-    i += 1;
-  }
-  return Math.min(i + 1, text.length);
-}
-
 /**
- * Parses tsconfig.json or jsconfig.json content into compiler aliases.
- */
-export function parseTsConfigAliases(jsonText: string): TsConfigAliases {
-  try {
-    // Strip simple JSON comments before parsing
-    const clean = jsonText
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*/g, '');
-    const parsed = JSON.parse(clean);
-    const compiler = parsed.compilerOptions || {};
-    return {
-      baseUrl: compiler.baseUrl,
-      paths: compiler.paths,
-    };
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Resolves an import specifier against project indexed file paths.
+ * Resolves an import specifier against canonical project-relative file paths.
  */
 export function resolveSpecifier(
   importerPath: string,
@@ -250,11 +368,10 @@ export function resolveSpecifier(
   allFilePaths: Set<string>,
   aliases?: TsConfigAliases
 ): { targetPath: string; isExternal: boolean; isResolved: boolean } {
-  // 1. External packages: specifiers not starting with relative/root indicator and not matching local alias
   const isRelative = specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..';
   const isAbsolute = specifier.startsWith('/');
 
-  // Try alias matches first if configured
+  // 1. Try explicit tsconfig / jsconfig alias mappings
   if (aliases?.paths && !isRelative && !isAbsolute) {
     for (const [pattern, targets] of Object.entries(aliases.paths)) {
       const starIdx = pattern.indexOf('*');
@@ -282,7 +399,7 @@ export function resolveSpecifier(
     }
   }
 
-  // Common default Vite/Next alias: `@/*` -> `src/*` or `./*`
+  // 2. Default Vite/Next alias fallback `@/*` -> `src/*` or `./*` if not overridden
   if (specifier.startsWith('@/') && (!aliases?.paths || !aliases.paths['@/*'])) {
     const sub = specifier.slice(2);
     const candidateSrc = testCandidatePath(`src/${sub}`, allFilePaths);
@@ -291,15 +408,15 @@ export function resolveSpecifier(
     if (candidateRoot) return { targetPath: candidateRoot, isExternal: false, isResolved: true };
   }
 
-  // baseUrl resolution
+  // 3. baseUrl resolution
   if (aliases?.baseUrl && !isRelative && !isAbsolute) {
-    const baseCandidate = testCandidatePath(`${aliases.baseUrl}/${specifier}`, allFilePaths);
+    const baseCandidate = testCandidatePath(specifier, allFilePaths, aliases.baseUrl);
     if (baseCandidate) {
       return { targetPath: baseCandidate, isExternal: false, isResolved: true };
     }
   }
 
-  // Relative resolution
+  // 4. Relative resolution
   if (isRelative) {
     const dir = getDirname(importerPath);
     const combined = dir ? `${dir}/${specifier}` : specifier;
@@ -311,7 +428,7 @@ export function resolveSpecifier(
     return { targetPath: normalizeRelativePath(combined), isExternal: false, isResolved: false };
   }
 
-  // If not relative and did not match any local alias, it's an external npm package
+  // 5. External npm package
   return {
     targetPath: extractPackageName(specifier),
     isExternal: true,
@@ -320,16 +437,15 @@ export function resolveSpecifier(
 }
 
 /**
- * Tests a candidate path against the set of indexed project file paths,
- * trying common extension variants and index files.
+ * Tests candidate path variants against indexed project file paths.
  */
-function testCandidatePath(candidate: string, allFilePaths: Set<string>, baseUrl?: string): string | null {
+export function testCandidatePath(candidate: string, allFilePaths: Set<string>, baseUrl?: string): string | null {
   const norm = normalizeRelativePath(baseUrl && baseUrl !== '.' ? `${baseUrl}/${candidate}` : candidate);
 
   // Exact match
   if (allFilePaths.has(norm)) return norm;
 
-  // If candidate ends with .js or .jsx, also try TypeScript substitutions
+  // TypeScript / JSX substitutions
   if (norm.endsWith('.js')) {
     const base = norm.slice(0, -3);
     if (allFilePaths.has(`${base}.ts`)) return `${base}.ts`;
@@ -347,7 +463,7 @@ function testCandidatePath(candidate: string, allFilePaths: Set<string>, baseUrl
     if (allFilePaths.has(withExt)) return withExt;
   }
 
-  // Index candidates
+  // Index file candidates
   const indexCandidates = [
     '/index.ts',
     '/index.tsx',
@@ -365,10 +481,10 @@ function testCandidatePath(candidate: string, allFilePaths: Set<string>, baseUrl
 }
 
 /**
- * Builds the complete DependencyGraphData for all analyzed project files.
+ * Builds the complete DependencyGraphData from analyzed files and their raw specifiers.
  */
 export function buildDependencyGraph(
-  analyzedFiles: Array<{ id: string; path: string; text?: string; cachedEdges?: DependencyEdge[] }>,
+  analyzedFiles: Array<{ id: string; path: string; text?: string; rawSpecifiers?: RawSpecifier[] }>,
   allFilePaths: Set<string>,
   aliases?: TsConfigAliases
 ): DependencyGraphData {
@@ -381,21 +497,10 @@ export function buildDependencyGraph(
   const externalPackagesSet = new Set<string>();
 
   for (const file of analyzedFiles) {
-    // If cached edges already exist from previous scan and source was unchanged, reuse them!
-    if (file.cachedEdges && file.cachedEdges.length > 0) {
-      for (const edge of file.cachedEdges) {
-        // Re-link targetId in case target node IDs changed or new files were added
-        const targetId = edge.targetPath ? pathToId.get(edge.targetPath) : undefined;
-        allEdges.push({ ...edge, targetId });
-        if (edge.isExternal) externalPackagesSet.add(edge.targetPath);
-      }
-      continue;
-    }
+    // Get raw specifiers either from provided array or parse from text
+    const rawSpecifiers = file.rawSpecifiers ?? (file.text ? extractSpecifiers(file.text) : []);
 
-    if (!file.text) continue;
-
-    const rawSpecifiers = extractSpecifiers(file.text);
-    for (let idx = 0; idx < rawSpecifiers.length; idx += 1) {
+    for (let idx = 0; idx < rawSpecifiers.length; idx++) {
       const raw = rawSpecifiers[idx];
       const resolved = resolveSpecifier(file.path, raw.specifier, allFilePaths, aliases);
       const targetId = !resolved.isExternal && resolved.isResolved ? pathToId.get(resolved.targetPath) : undefined;
@@ -429,64 +534,82 @@ export function buildDependencyGraph(
 }
 
 /**
- * Finds all simple circular dependency cycles using DFS cycle detection.
- * Returns unique cycles formatted as arrays of file paths.
+ * Implements real Tarjan's Strongly Connected Components (SCC) algorithm.
+ * Identifies all strongly connected component groups that contain circular dependencies.
+ * An SCC is circular if:
+ * 1) It contains more than 1 module; OR
+ * 2) It contains 1 module that has a self-loop (imports itself).
+ * Returns array of circular module groups, each sorted alphabetically.
  */
 export function findCircularDependencies(edges: DependencyEdge[]): string[][] {
   const adj = new Map<string, Set<string>>();
 
   for (const edge of edges) {
-    if (!edge.isExternal && edge.isResolved && edge.targetPath && edge.sourcePath !== edge.targetPath) {
-      if (!adj.has(edge.sourcePath)) adj.set(edge.sourcePath, new Set());
-      adj.get(edge.sourcePath)!.add(edge.targetPath);
+    if (!edge.isExternal && edge.isResolved && edge.targetPath) {
+      let set = adj.get(edge.sourcePath);
+      if (!set) {
+        set = new Set();
+        adj.set(edge.sourcePath, set);
+      }
+      set.add(edge.targetPath);
     }
   }
 
-  const cycles: string[][] = [];
-  const visited = new Set<string>();
-  const recStack = new Set<string>();
-  const currentPath: string[] = [];
+  let currentIndex = 0;
+  const indices = new Map<string, number>();
+  const lowlinks = new Map<string, number>();
+  const onStack = new Map<string, boolean>();
+  const stack: string[] = [];
+  const circularSCCs: string[][] = [];
 
-  function dfs(node: string) {
-    visited.add(node);
-    recStack.add(node);
-    currentPath.push(node);
+  function strongConnect(u: string): void {
+    indices.set(u, currentIndex);
+    lowlinks.set(u, currentIndex);
+    currentIndex++;
+    stack.push(u);
+    onStack.set(u, true);
 
-    const neighbors = adj.get(node);
+    const neighbors = adj.get(u);
     if (neighbors) {
-      for (const neighbor of neighbors) {
-        if (!visited.has(neighbor)) {
-          dfs(neighbor);
-        } else if (recStack.has(neighbor)) {
-          // Cycle detected! Extract from neighbor to current
-          const cycleStart = currentPath.indexOf(neighbor);
-          if (cycleStart !== -1) {
-            const cycle = [...currentPath.slice(cycleStart), neighbor];
-            // Normalize cycle representation (start with smallest path string)
-            const minPath = [...cycle.slice(0, -1)].sort()[0];
-            const minIdx = cycle.indexOf(minPath);
-            const normalized = [...cycle.slice(minIdx, -1), ...cycle.slice(0, minIdx), minPath];
-            // Check if cycle is already recorded
-            const key = normalized.join(' -> ');
-            if (!cycles.some((c) => c.join(' -> ') === key)) {
-              cycles.push(normalized);
-            }
-          }
+      for (const v of neighbors) {
+        if (!indices.has(v)) {
+          // Successor v has not yet been visited; recurse on it
+          strongConnect(v);
+          lowlinks.set(u, Math.min(lowlinks.get(u)!, lowlinks.get(v)!));
+        } else if (onStack.get(v)) {
+          // Successor v is in stack and hence in the current SCC
+          lowlinks.set(u, Math.min(lowlinks.get(u)!, indices.get(v)!));
         }
       }
     }
 
-    recStack.delete(node);
-    currentPath.pop();
-  }
+    // If u is a root node, pop the stack and generate an SCC
+    if (lowlinks.get(u) === indices.get(u)) {
+      const scc: string[] = [];
+      let w: string;
+      do {
+        w = stack.pop()!;
+        onStack.set(w, false);
+        scc.push(w);
+      } while (w !== u);
 
-  for (const node of adj.keys()) {
-    if (!visited.has(node)) {
-      dfs(node);
+      // A component is circular if it has > 1 node, or has 1 node with a self-loop
+      if (scc.length > 1) {
+        circularSCCs.push(scc.sort());
+      } else if (scc.length === 1 && adj.get(u)?.has(u)) {
+        circularSCCs.push([u]);
+      }
     }
   }
 
-  return cycles.sort((a, b) => a.length - b.length || a[0].localeCompare(b[0]));
+  for (const node of adj.keys()) {
+    if (!indices.has(node)) {
+      strongConnect(node);
+    }
+  }
+
+  // Sort components by size (descending) and first element (alphabetically)
+  return circularSCCs.sort((a, b) => b.length - a.length || a[0].localeCompare(b[0]));
 }
 
 /**

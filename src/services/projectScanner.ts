@@ -1,15 +1,28 @@
 /**
  * NEXUS Project Scanner & Incremental Analysis Engine
  * Direct Chromium File System Access API, bounded concurrency, cancellation,
- * incremental fingerprint caching, and dependency extraction.
+ * incremental fingerprint caching, off-thread worker dependency analysis,
+ * and canonical project-relative path modeling.
  */
 
-import type { AnalysisCategory, DependencyEdge, ProjectIndex, ProjectNode, ScanWarning } from '../domain/models';
+import {
+  DEPENDENCY_PARSER_VERSION,
+  DEPENDENCY_RESOLVER_VERSION,
+  SCANNER_ANALYSIS_VERSION,
+  type AnalysisCategory,
+  type ProjectAnalysisConfig,
+  type ProjectIndex,
+  type ProjectNode,
+  type RawSpecifier,
+  type ScanWarning,
+} from '../domain/models';
 import { aggregateDirectoryStats, calculateMetrics } from './metrics';
 import { shouldIgnoreEntry } from './ignoreRules';
 import { analysisCategoryFor, extensionOf, isAnalyzableText, isSensitiveTextFile, languageFor } from '../utils/fileTypes';
 import { withDeterministicLayout } from './layout';
-import { buildDependencyGraph, parseTsConfigAliases, type TsConfigAliases } from './dependencies';
+import { parseTsConfigAliases, type TsConfigAliases } from '../utils/jsonc';
+import { workerBridge } from './workerClient';
+import type { BatchItem } from './analysisEngine';
 
 interface DirectoryEntryHandle {
   kind: 'file' | 'directory';
@@ -85,9 +98,21 @@ export async function pickLocalProjectDirectory(): Promise<LocalDirectoryHandle>
 }
 
 export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options: ScanOptions = {}): Promise<ProjectIndex> {
-  const projectId = options.projectId ?? options.previousProject?.id ?? newProjectId();
-  const maxTextFileBytes = options.maxTextFileBytes ?? 2 * 1024 * 1024;
-  const maxEntries = options.maxEntries ?? 50_000;
+  const previousProject = options.previousProject;
+  const projectId = options.projectId ?? previousProject?.id ?? newProjectId();
+
+  // Honor persisted analysis configuration from previous project when not explicitly overridden
+  const prevConfig = previousProject?.analysisConfig;
+  const effectiveCategories: ReadonlySet<AnalysisCategory> =
+    options.analyzeCategories !== undefined
+      ? options.analyzeCategories
+      : prevConfig?.selectedCategories
+      ? new Set<AnalysisCategory>(prevConfig.selectedCategories)
+      : new Set<AnalysisCategory>(['source', 'configuration', 'documentation', 'test']);
+
+  const maxTextFileBytes = options.maxTextFileBytes ?? prevConfig?.maxTextFileBytes ?? 2 * 1024 * 1024;
+  const maxEntries = options.maxEntries ?? prevConfig?.maxEntries ?? 50_000;
+
   const nodes: ProjectNode[] = [];
   const warnings: ScanWarning[] = [];
   let discovered = 0;
@@ -96,46 +121,49 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
 
   // Build lookup index from previous analysis for incremental refresh
   const prevNodesByPath = new Map<string, ProjectNode>();
-  const prevEdgesBySource = new Map<string, DependencyEdge[]>();
-
-  if (options.previousProject) {
-    for (const node of options.previousProject.nodes) {
+  if (previousProject) {
+    for (const node of previousProject.nodes) {
       if (node.kind === 'file') {
         prevNodesByPath.set(node.path, node);
       }
     }
-    if (options.previousProject.dependencies?.edges) {
-      for (const edge of options.previousProject.dependencies.edges) {
-        const list = prevEdgesBySource.get(edge.sourcePath) ?? [];
-        list.push(edge);
-        prevEdgesBySource.set(edge.sourcePath, list);
-      }
-    }
   }
 
-  const rootPath = handle.name;
-  const rootId = stableNodeId(projectId, rootPath);
+  // Canonical root node: path is ""
+  const rootId = stableNodeId(projectId, '');
   nodes.push({
     id: rootId,
     projectId,
     parentId: null,
     name: handle.name,
-    path: rootPath,
+    path: '',
     kind: 'project',
     sizeBytes: 0,
     loc: 0,
     depth: 0,
   });
 
-  const filesForDependencyAnalysis: Array<{
-    id: string;
-    path: string;
-    text?: string;
-    cachedEdges?: DependencyEdge[];
-  }> = [];
-
   const allFilePaths = new Set<string>();
   let tsConfigAliases: TsConfigAliases | undefined;
+
+  // Bounded batch buffer for off-main-thread parsing
+  let pendingBatch: BatchItem[] = [];
+  const nodeById = new Map<string, ProjectNode>();
+
+  async function flushPendingBatch(): Promise<void> {
+    if (pendingBatch.length === 0) return;
+    const batchToProcess = pendingBatch;
+    pendingBatch = [];
+    const results = await workerBridge.parseBatch(batchToProcess, options.signal);
+    for (const res of results) {
+      const node = nodeById.get(res.id);
+      if (node) {
+        node.loc = res.loc;
+        node.rawSpecifiers = res.rawSpecifiers;
+        node.dependencyParserVersion = DEPENDENCY_PARSER_VERSION;
+      }
+    }
+  }
 
   async function walk(directory: LocalDirectoryHandle, parentId: string, parentPath: string, depth: number): Promise<void> {
     ensureNotAborted(options.signal);
@@ -143,7 +171,6 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
     try {
       entries = directory.values();
     } catch (error) {
-      // If root directory itself cannot be opened, that is fatal!
       if (depth === 1) {
         throw new RootAccessError(handle.name, error instanceof Error ? error.message : 'Permission denied or folder inaccessible');
       }
@@ -156,12 +183,25 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
         ensureNotAborted(options.signal);
         if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
         if (shouldIgnoreEntry(entry.name, entry.kind)) continue;
-        const path = `${parentPath}/${entry.name}`;
+
+        // Canonical project-relative path
+        const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
         discovered += 1;
 
         if (entry.kind === 'directory') {
           const id = stableNodeId(projectId, path);
-          nodes.push({ id, projectId, parentId, name: entry.name, path, kind: 'directory', sizeBytes: 0, loc: 0, depth });
+          const dirNode: ProjectNode = {
+            id,
+            projectId,
+            parentId,
+            name: entry.name,
+            path,
+            kind: 'directory',
+            sizeBytes: 0,
+            loc: 0,
+            depth,
+          };
+          nodes.push(dirNode);
           await walk(entry, id, path, depth + 1);
         } else {
           allFilePaths.add(path);
@@ -172,54 +212,66 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
             const analyzable = isAnalyzableText(file.name);
             const category = analysisCategoryFor(path, file.name);
             const sensitive = isSensitiveTextFile(file.name);
+            const isCategoryEnabled = shouldAnalyzeCategory(category, effectiveCategories);
             const prev = prevNodesByPath.get(path);
 
             let loc = 0;
             let analysisStatus: ProjectNode['analysisStatus'] = 'metadata-only';
+            let rawSpecifiers: RawSpecifier[] | undefined;
 
-            // Check if compiler aliases can be parsed from tsconfig/jsconfig
-            if ((file.name === 'tsconfig.json' || file.name === 'jsconfig.json') && !tsConfigAliases && file.size < 512 * 1024) {
+            // Only attempt to parse tsconfig/jsconfig for aliases IF Configuration category is enabled!
+            if (
+              (file.name === 'tsconfig.json' || file.name === 'jsconfig.json') &&
+              !tsConfigAliases &&
+              isCategoryEnabled &&
+              file.size < 512 * 1024
+            ) {
               try {
                 const confText = await file.text();
                 tsConfigAliases = parseTsConfigAliases(confText);
               } catch {
-                // Ignore invalid json
+                // Ignore parse errors
               }
             }
 
             if (sensitive) {
               // Sensitive file: NEVER call file.text()!
               analysisStatus = 'skipped-sensitive';
-            } else if (analyzable && !shouldAnalyzeCategory(category, options.analyzeCategories)) {
+            } else if (analyzable && !isCategoryEnabled) {
+              // Disabled category: NEVER call file.text()!
               analysisStatus = 'metadata-only';
             } else if (analyzable && file.size > maxTextFileBytes) {
               analysisStatus = 'skipped-large';
             } else if (analyzable) {
-              // Incremental check: Can we reuse previous analysis?
+              // Incremental reuse check:
+              // Can only reuse if modified timestamp & size match, was analyzed, and has compatible raw specifiers
               const canReuse =
                 prev &&
                 prev.modifiedAt === file.lastModified &&
                 prev.sizeBytes === file.size &&
-                prev.analysisStatus === 'analyzed';
+                prev.analysisStatus === 'analyzed' &&
+                prev.dependencyParserVersion === DEPENDENCY_PARSER_VERSION &&
+                prev.rawSpecifiers !== undefined;
 
               if (canReuse) {
                 loc = prev.loc;
+                rawSpecifiers = prev.rawSpecifiers;
                 analysisStatus = 'analyzed';
                 reused += 1;
-                // Reuse previous dependency edges
-                const cachedEdges = prevEdgesBySource.get(path);
-                filesForDependencyAnalysis.push({ id: nodeId, path, cachedEdges });
               } else {
-                // Read fresh text
+                // Read text and queue for bounded off-thread worker parsing
                 const text = await file.text();
-                loc = text.length === 0 ? 0 : text.split(/\r?\n/).length;
-                analyzed += 1;
                 analysisStatus = 'analyzed';
-                filesForDependencyAnalysis.push({ id: nodeId, path, text });
+                analyzed += 1;
+                pendingBatch.push({ id: nodeId, path, text });
+
+                if (pendingBatch.length >= 16) {
+                  await flushPendingBatch();
+                }
               }
             }
 
-            nodes.push({
+            const fileNode: ProjectNode = {
               id: nodeId,
               projectId,
               parentId,
@@ -233,7 +285,12 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
               modifiedAt: file.lastModified,
               depth,
               analysisStatus,
-            });
+              rawSpecifiers,
+              dependencyParserVersion: rawSpecifiers ? DEPENDENCY_PARSER_VERSION : undefined,
+            };
+
+            nodes.push(fileNode);
+            nodeById.set(nodeId, fileNode);
           } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') throw error;
             warnings.push({ path, message: error instanceof Error ? error.message : 'File could not be read.' });
@@ -254,11 +311,31 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
     }
   }
 
-  await walk(handle, rootId, rootPath, 1);
+  await walk(handle, rootId, '', 1);
   ensureNotAborted(options.signal);
 
-  // Compute dependency relationships
-  const dependencyGraph = buildDependencyGraph(filesForDependencyAnalysis, allFilePaths, tsConfigAliases);
+  // Flush any remaining files in batch
+  await flushPendingBatch();
+  ensureNotAborted(options.signal);
+
+  // Phase B: Resolve dependency specifiers against CURRENT file set and CURRENT aliases off-thread
+  const filesForResolution: Array<{ id: string; path: string; rawSpecifiers: RawSpecifier[] }> = [];
+  for (const node of nodes) {
+    if (node.kind === 'file') {
+      filesForResolution.push({
+        id: node.id,
+        path: node.path,
+        rawSpecifiers: node.rawSpecifiers ?? [],
+      });
+    }
+  }
+
+  const dependencyGraph = await workerBridge.resolveGraph(
+    filesForResolution,
+    Array.from(allFilePaths),
+    tsConfigAliases,
+    options.signal
+  );
 
   // Map incoming and outgoing dependency counts
   const outgoingCounts = new Map<string, number>();
@@ -286,17 +363,27 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
   metrics.circularDependenciesCount = dependencyGraph.circularDependencies.length;
 
   const now = Date.now();
+  const analysisConfig: ProjectAnalysisConfig = {
+    selectedCategories: Array.from(effectiveCategories),
+    maxTextFileBytes,
+    maxEntries,
+    scannerAnalysisVersion: SCANNER_ANALYSIS_VERSION,
+    dependencyParserVersion: DEPENDENCY_PARSER_VERSION,
+    dependencyResolverVersion: DEPENDENCY_RESOLVER_VERSION,
+  };
+
   return {
     schemaVersion: 3,
     id: projectId,
     name: handle.name,
     rootPathLabel: handle.name,
-    createdAt: options.createdAt ?? options.previousProject?.createdAt ?? now,
+    createdAt: options.createdAt ?? previousProject?.createdAt ?? now,
     updatedAt: now,
     source: 'local',
     nodes: laidOut,
     metrics,
     warnings,
     dependencies: dependencyGraph,
+    analysisConfig,
   };
 }

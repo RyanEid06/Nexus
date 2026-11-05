@@ -8,10 +8,10 @@ NEXUS is a **desktop-first, local-first 3D codebase visualizer and architectural
 
 - **Direct Local File Access**: Opens folders directly from your local file system. Source code never leaves the browser—no uploads, no cloud proxies, and no repository cloning.
 - **Interactive 3D Graph**: Spatial representation of directories, subdirectories, and files built with Three.js / React Three Fiber, featuring physics-informed layouts, camera auto-framing, and WebGL error recovery.
-- **Real Parsed Dependencies**: Lexical extraction of JavaScript and TypeScript imports (`import`, `export from`, `require()`, dynamic `import()`), path resolution (`baseUrl`, `tsconfig.json` path mappings, index files), external package grouping, Tarjan's cycle detection, and BFS shortest-path routing.
+- **Real Parsed Dependencies**: Token-aware lexical extraction of JavaScript and TypeScript imports (`import`, `export from`, `require()`, dynamic `import()`), path resolution (`baseUrl`, `tsconfig.json` JSONC path mappings, index files), external package grouping, Tarjan's Strongly Connected Components (SCC) circular dependency group detection, and BFS shortest-path routing.
 - **Virtualized Structure Explorer**: High-density hierarchical view rendering thousands of nodes with windowing and zero DOM bloat, expand/collapse toggles, and keyboard navigation.
 - **Deterministic Analytics & Insights**: Physical lines of code (LOC), language breakdown, file size distribution, and analysis safety metrics (metadata-only vs text-analyzed).
-- **Persistent Local Caching & Reconnect**: Compact indexes stored in IndexedDB. Stored folder handles preserve project identities, support incremental refresh (re-analyzing only modified files), and graceful reconnection.
+- **Persistent Local Caching & Reconnect**: Compact indexes stored in IndexedDB with persisted per-project analysis configuration. Stored folder handles preserve project identities, support incremental refresh (caching raw specifiers without rereading unchanged source), off-thread Web Worker parsing, and safe folder relocation with structural validation.
 - **Installable Offline PWA**: Compliant Progressive Web App with service worker offline caching, manifest icons, and instant loading.
 
 ---

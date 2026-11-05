@@ -25,11 +25,15 @@ const position: Record<string, [number, number, number]> = {
 const pathOf = (id: string): string => {
   const item = raw.find((entry) => entry[0] === id);
   if (!item) return id;
-  if (!item[1]) return item[2];
-  return `${pathOf(item[1])}/${item[2]}`;
+  if (!item[1]) return '';
+  const parent = pathOf(item[1]);
+  return parent ? `${parent}/${item[2]}` : item[2];
 };
 
-const depthOf = (id: string): number => pathOf(id).split('/').length - 1;
+const depthOf = (id: string): number => {
+  const pth = pathOf(id);
+  return pth ? pth.split('/').length : 0;
+};
 const baseTime = Date.UTC(2026, 10, 1, 12, 0, 0);
 
 const rawNodes: ProjectNode[] = raw.map(([id, parentId, name, kind, sizeBytes, loc, language], index) => ({
@@ -91,4 +95,12 @@ export const demoProject: ProjectIndex = {
   metrics,
   warnings: [],
   dependencies: demoDependencies,
+  analysisConfig: {
+    selectedCategories: ['source', 'configuration', 'documentation', 'test'],
+    maxTextFileBytes: 2 * 1024 * 1024,
+    maxEntries: 50_000,
+    scannerAnalysisVersion: 1,
+    dependencyParserVersion: 2,
+    dependencyResolverVersion: 2,
+  },
 };

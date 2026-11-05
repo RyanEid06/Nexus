@@ -344,8 +344,8 @@ export function DependenciesPage() {
         {activeTab === 'cycles' && (
           <section className="panel cycles-panel">
             <div className="panel-header">
-              <h2>Circular Dependencies</h2>
-              <p>Detected dependency loops where modules directly or transitively import each other.</p>
+              <h2>Circular Dependencies (Tarjan SCC)</h2>
+              <p>Strongly connected module groups where files directly or transitively depend on each other.</p>
             </div>
 
             {circulars.length > 0 ? (
@@ -354,7 +354,7 @@ export function DependenciesPage() {
                   <div key={idx} className="cycle-card">
                     <div className="cycle-header">
                       <AlertTriangle size={15} />
-                      <b>Cycle #{idx + 1} ({cycle.length - 1} hops)</b>
+                      <b>Group #{idx + 1} ({cycle.length} {cycle.length === 1 ? 'module (self-loop)' : 'modules in cycle'})</b>
                     </div>
                     <div className="cycle-steps">
                       {cycle.map((path, stepIdx) => (

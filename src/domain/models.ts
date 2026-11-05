@@ -4,6 +4,24 @@ export type AnalysisCategory = 'source' | 'configuration' | 'documentation' | 't
 
 export type DependencyType = 'static-import' | 'side-effect' | 'export-from' | 'dynamic-import' | 'require';
 
+export interface RawSpecifier {
+  specifier: string;
+  type: DependencyType;
+}
+
+export const SCANNER_ANALYSIS_VERSION = 1;
+export const DEPENDENCY_PARSER_VERSION = 2;
+export const DEPENDENCY_RESOLVER_VERSION = 2;
+
+export interface ProjectAnalysisConfig {
+  selectedCategories: AnalysisCategory[];
+  maxTextFileBytes: number;
+  maxEntries: number;
+  scannerAnalysisVersion: number;
+  dependencyParserVersion: number;
+  dependencyResolverVersion: number;
+}
+
 export interface DependencyEdge {
   id: string;
   sourceId: string;
@@ -43,6 +61,8 @@ export interface ProjectNode {
   descendantFolders?: number;
   outgoingCount?: number;
   incomingCount?: number;
+  rawSpecifiers?: RawSpecifier[];
+  dependencyParserVersion?: number;
 }
 
 export interface LanguageStat {
@@ -85,6 +105,7 @@ export interface ProjectIndex {
   metrics: ProjectMetrics;
   warnings: ScanWarning[];
   dependencies?: DependencyGraphData;
+  analysisConfig?: ProjectAnalysisConfig;
 }
 
 export interface NexusPreferences {

@@ -15,6 +15,20 @@ export interface StoredPreference {
 
 export type HandleConnectionStatus = 'connected' | 'permission-required' | 'unavailable';
 
+export class StorageError extends Error {
+  constructor(message: string, public readonly originalError?: unknown) {
+    super(message);
+    this.name = 'StorageError';
+  }
+}
+
+export class ProjectMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectMismatchError';
+  }
+}
+
 class NexusDatabase extends Dexie {
   projects!: EntityTable<StoredProject, 'id'>;
   nodes!: EntityTable<ProjectNode, 'id'>;
@@ -61,7 +75,10 @@ export async function saveProject(project: ProjectIndex, handle?: LocalDirectory
     tryRequestStoragePersistence();
   } catch (error) {
     console.error('Failed to save project to IndexedDB:', error);
-    throw new Error(`Failed to save project data locally: ${error instanceof Error ? error.message : 'Storage error'}`);
+    throw new StorageError(
+      `Failed to save project data locally: ${error instanceof Error ? error.message : 'Storage error'}`,
+      error
+    );
   }
 }
 
@@ -73,7 +90,10 @@ export async function attachProjectHandle(projectId: string, handle: LocalDirect
     await db.handles.put({ projectId, handle });
   } catch (error) {
     console.error('Failed to attach directory handle:', error);
-    throw new Error(`Could not store folder reference: ${error instanceof Error ? error.message : 'Storage error'}`);
+    throw new StorageError(
+      `Could not store folder reference: ${error instanceof Error ? error.message : 'Storage error'}`,
+      error
+    );
   }
 }
 
@@ -106,7 +126,10 @@ export async function loadProject(id: string): Promise<ProjectIndex | undefined>
     return { ...metadata, warnings: metadata.warnings ?? [], nodes, schemaVersion: 3 };
   } catch (error) {
     console.error('Failed to load project from IndexedDB:', error);
-    throw new Error(`Failed to load project: ${error instanceof Error ? error.message : 'Database read error'}`);
+    throw new StorageError(
+      `Failed to load project: ${error instanceof Error ? error.message : 'Database read error'}`,
+      error
+    );
   }
 }
 
@@ -139,7 +162,10 @@ export async function listProjects(): Promise<StoredProject[]> {
     });
   } catch (error) {
     console.error('Failed to list projects from IndexedDB:', error);
-    return [];
+    throw new StorageError(
+      `Failed to list projects from local database: ${error instanceof Error ? error.message : 'Database read error'}`,
+      error
+    );
   }
 }
 
@@ -156,7 +182,10 @@ export async function removeProject(id: string): Promise<void> {
     });
   } catch (error) {
     console.error('Failed to remove project from IndexedDB:', error);
-    throw new Error(`Failed to remove project: ${error instanceof Error ? error.message : 'Database error'}`);
+    throw new StorageError(
+      `Failed to remove project: ${error instanceof Error ? error.message : 'Database error'}`,
+      error
+    );
   }
 }
 
@@ -219,8 +248,12 @@ export async function requestProjectPermission(projectId: string): Promise<'gran
 export async function loadPreferences(): Promise<NexusPreferences> {
   try {
     return (await db.preferences.get('preferences'))?.value ?? DEFAULT_PREFERENCES;
-  } catch {
-    return DEFAULT_PREFERENCES;
+  } catch (error) {
+    console.error('Failed to load preferences from IndexedDB:', error);
+    throw new StorageError(
+      `Failed to load preferences: ${error instanceof Error ? error.message : 'Database read error'}`,
+      error
+    );
   }
 }
 
@@ -229,6 +262,60 @@ export async function savePreferences(value: NexusPreferences): Promise<void> {
     await db.preferences.put({ key: 'preferences', value });
   } catch (error) {
     console.error('Failed to save preferences to IndexedDB:', error);
+    throw new StorageError(
+      `Failed to save preferences: ${error instanceof Error ? error.message : 'Database write error'}`,
+      error
+    );
+  }
+}
+
+/**
+ * Safely inspects a candidate directory before relocating a project to avoid
+ * silently corrupting an existing project ID with an entirely unrelated repository.
+ */
+export async function validateRelocationCandidate(
+  existing: ProjectIndex,
+  candidateHandle: LocalDirectoryHandle
+): Promise<void> {
+  // If stored handle exists and isSameEntry returns true, identity is confirmed
+  const storedHandle = await getProjectHandle(existing.id);
+  if (storedHandle?.isSameEntry) {
+    try {
+      if (await storedHandle.isSameEntry(candidateHandle)) {
+        return;
+      }
+    } catch {
+      // Stored handle might be inaccessible
+    }
+  }
+
+  // Inspect candidate directory entries safely
+  const candidateNames = new Set<string>();
+  let count = 0;
+  try {
+    for await (const entry of candidateHandle.values()) {
+      candidateNames.add(entry.name);
+      count++;
+      if (count > 200) break;
+    }
+  } catch (err) {
+    throw new StorageError(
+      `Cannot inspect candidate folder "${candidateHandle.name}": ${err instanceof Error ? err.message : 'Access error'}`
+    );
+  }
+
+  // Get depth-1 child names from existing project
+  const existingDepth1 = existing.nodes
+    .filter((n) => n.depth === 1)
+    .map((n) => n.name);
+
+  if (existingDepth1.length > 0) {
+    const matched = existingDepth1.filter((name) => candidateNames.has(name));
+    if (matched.length === 0) {
+      throw new ProjectMismatchError(
+        `Selected folder "${candidateHandle.name}" does not match project "${existing.name}". None of the expected project files or directories were found in this location.`
+      );
+    }
   }
 }
 
