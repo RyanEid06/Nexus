@@ -1,8 +1,8 @@
 {
   "product": "NEXUS",
   "tagline": "Visualize. Explore. Understand your code.",
-  "version": "0.3.0-gemini-starter",
-  "status": "clean Gemini round-1 starter; Milestone 1 implementation/verification pending",
+  "version": "1.0.0",
+  "status": "production V1 release; client-only local-first codebase visualizer",
   "locked": {
     "target": "desktop/laptop web app and installable PWA",
     "mobile": false,

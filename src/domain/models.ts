@@ -2,6 +2,28 @@ export type NodeKind = 'project' | 'directory' | 'file';
 export type AnalysisStatus = 'analyzed' | 'metadata-only' | 'skipped-large' | 'skipped-sensitive';
 export type AnalysisCategory = 'source' | 'configuration' | 'documentation' | 'test';
 
+export type DependencyType = 'static-import' | 'side-effect' | 'export-from' | 'dynamic-import' | 'require';
+
+export interface DependencyEdge {
+  id: string;
+  sourceId: string;
+  sourcePath: string;
+  targetId?: string;
+  targetPath: string;
+  targetResolvedPath?: string;
+  specifier: string;
+  type: DependencyType;
+  isExternal: boolean;
+  isResolved: boolean;
+}
+
+export interface DependencyGraphData {
+  edges: DependencyEdge[];
+  circularDependencies: string[][];
+  circularCycles?: string[][];
+  externalPackages: string[];
+}
+
 export interface ProjectNode {
   id: string;
   projectId: string;
@@ -19,6 +41,8 @@ export interface ProjectNode {
   analysisStatus?: AnalysisStatus;
   descendantFiles?: number;
   descendantFolders?: number;
+  outgoingCount?: number;
+  incomingCount?: number;
 }
 
 export interface LanguageStat {
@@ -40,6 +64,8 @@ export interface ProjectMetrics {
   skippedSensitiveFiles: number;
   languages: LanguageStat[];
   dependencyEdges: number;
+  externalPackagesCount?: number;
+  circularDependenciesCount?: number;
 }
 
 export interface ScanWarning {
@@ -48,7 +74,7 @@ export interface ScanWarning {
 }
 
 export interface ProjectIndex {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   id: string;
   name: string;
   rootPathLabel: string;
@@ -58,6 +84,7 @@ export interface ProjectIndex {
   nodes: ProjectNode[];
   metrics: ProjectMetrics;
   warnings: ScanWarning[];
+  dependencies?: DependencyGraphData;
 }
 
 export interface NexusPreferences {

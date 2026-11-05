@@ -2,5 +2,5 @@
   "name": "NEXUS",
   "description": "Local-first desktop codebase visualization and analysis.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

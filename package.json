@@ -1,7 +1,7 @@
 {
   "name": "nexus-codebase-visualizer",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -22,7 +22,6 @@
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "three": "0.187.0",
-    "zod": "^3.24.2",
     "zustand": "5.0.16"
   },
   "devDependencies": {

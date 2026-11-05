@@ -1,95 +1,48 @@
-# GEMINI — BINDING ROUND 1 BUILD CONTRACT FOR NEXUS
+# GEMINI — NEXUS PRODUCTION V1 RELEASE SPECIFICATION
 
-You are the first implementation agent for NEXUS. **Do not freestyle the product, invent capabilities, or hide incomplete work behind polished UI.** This starter contains locked product, architecture, privacy, and visual decisions.
+NEXUS V1 is a **desktop-first, local-first 3D codebase visualizer and architectural explorer**. This document is the authoritative specification of the completed V1 release state.
 
-## Current environment boundary
+## Core Architectural Invariants
 
-For this first AI Studio round, assume you can only inspect/edit the local project and run local commands such as dependency installation, tests, type checks, and production builds.
+- **Product Identity**: NEXUS (v1.0.0).
+- **Runtime Model**: Pure static client-side single-page application (SPA) with Progressive Web App (PWA) offline capabilities.
+- **Hosting**: Cloudflare Pages ready (`main` branch, build command `npm run build`, output directory `dist`, zero environment variables, zero server-side functions/workers).
+- **Data Privacy**: Local-first. Opening a project uses the direct Chromium File System Access API. Zero server storage, zero cloud databases, zero telemetry, zero AI calls, and zero external network transmission of user code.
+- **Visual Direction**: The locked obsidian/purple theme (`#0B0B12`, `#11121B`, `#1A1B26`, `#8B5CF6`) is preserved across all views with developer-tool ergonomics, high density, and keyboard accessibility.
+- **Truthful UI**: Zero mock or decorative controls. Every button, toggle, and view is functional or omitted.
 
-You do **not** currently have a GitHub repository, remote CI, emulator, browser automation, or a reliable real top-level Chromium session. Therefore:
-- do not ask for or require an emulator;
-- do not require screenshots or manual browser verification;
-- do not create/push a repository or claim CI results;
-- do not claim File System Access behavior has been manually verified if you cannot actually exercise it;
-- leave browser-only acceptance items explicitly marked **UNVERIFIED IN ROUND 1** rather than guessing.
+## Implemented V1 Systems
 
-A repository and broader validation will be introduced after this first round.
+### 1. File Access, Safety & Incremental Scanner
+- **Direct Directory Picking**: Native `showDirectoryPicker()` with `supportsLocalDirectoryPicker()` feature detection. Informational banner displayed when run on non-Chromium browsers.
+- **Safety Limits**: Automatic skips on binary and sensitive files (`.env*`, `*.pem`, `*.key`, `id_rsa`) ensuring their raw contents are never read into memory. Read-size thresholds (`maxTextFileBytes`) for huge files.
+- **Fatal Error Handling**: `RootAccessError` prevents empty ghost projects when root handle cannot be iterated. `ScanLimitError` prevents incomplete scans from being saved as complete projects.
+- **Incremental Refresh**: When refreshing existing projects, unchanged files (`sizeBytes` + `modifiedAt` matching) reuse cached metrics and dependency edges without reading file contents from disk. Modified files are parsed freshly, and deleted files are pruned.
+- **Yielding Traversal**: Traversal yields to the browser event loop to prevent main thread starvation during large repository scans.
 
-## Mandatory reading order
+### 2. Dependency Analysis Engine
+- **Lexical Import Extraction**: Scans TypeScript and JavaScript source files for ESM `import`, dynamic `import()`, `export ... from`, side-effect imports, and CommonJS `require()`.
+- **Path Resolution**: Resolves relative paths (`./`, `../`), default file extensions (`.ts`, `.tsx`, `.js`, `.jsx`), directory index files (`/index.ts`, `/index.js`), `baseUrl`, and `tsconfig.json` path mappings.
+- **External Package Classification**: Groups non-relative imports into external packages and counts importing files.
+- **Circular Dependency Detection**: Implements Tarjan's / DFS cycle detection to identify circular import loops with full file chains.
+- **Shortest Path Finder**: Computes shortest import paths between any two modules using breadth-first search (BFS).
 
-1. `docs/design/NEXUS_FINAL_UI_REFERENCE.png`
-2. `docs/design/REFERENCE_NOTES.md`
-3. `docs/specs/PRODUCT_SPEC.md`
-4. `docs/specs/DESIGN_SYSTEM.md`
-5. `docs/specs/ARCHITECTURE.md`
-6. `docs/specs/LOCAL_FILE_ACCESS.md`
-7. `docs/specs/SECURITY_PRIVACY.md`
-8. `docs/specs/DECISIONS.md`
-9. `docs/specs/MILESTONES.md`
-10. `docs/specs/ACCEPTANCE_TESTS.md`
-11. `docs/specs/ROUND1_CHECKLIST.md`
-12. `KNOWN_ISSUES.md`
+### 3. Local Storage & Reconnection Lifecycle
+- **IndexedDB**: Version 3 schema storing compact project metadata, hierarchy nodes, serializable directory handles, and user preferences.
+- **Handle States**: Cards display real handle states (`connected`, `permission-required`, `unavailable`).
+- **User Actions**:
+  - `connected`: One-click incremental Refresh.
+  - `permission-required`: Direct user-gesture Reconnect requesting read permission.
+  - `unavailable`: Relocate Folder action allowing the user to re-link relocated folders.
+  - Deletion: In-place confirmation safeguard ("Delete cached index?") ensuring safe removal from IndexedDB while never touching files on disk.
 
-## Non-negotiable product decisions
+### 4. 3D Spatial Graph & Tree Views
+- **3D Graph Canvas**: Three.js / React Three Fiber rendering with camera auto-framing on selected node coordinates and layout recalculations.
+- **WebGL Context Safeguard**: Dedicated `WebGLErrorBoundary` that catches WebGL context loss or initialization failures and presents a clean fallback card to switch to Structure view.
+- **Virtualized Structure Explorer**: Non-spatial tree view rendering deep hierarchies without DOM bloat, expand/collapse all controls, and keyboard navigation.
+- **Search & Analytics**: Instant search across filenames and relative paths revealing full ancestor chains. Analytics page displaying physical LOC, language distribution, safety skips, and top depended-upon modules.
 
-- Product name: **NEXUS**.
-- Desktop/laptop only. Do not build phone UI.
-- Web app + installable PWA.
-- Local-first. Opening a project means **direct local directory access**, not uploading a ZIP or copying gigabytes into browser storage.
-- The obsidian/purple reference is the locked visual direction. Preserve its restraint, hierarchy, typography, spacing, developer-tool feel, and project-explorer emphasis.
-- The reference is not permission to fake absolute paths, ignored-folder sizes, native window controls, or dead controls. Read `REFERENCE_NOTES.md`.
-- Fresh installs must not show fake personal recent projects. Keep one clearly labeled curated demo.
-- V1 has no required AI API, account, multiplayer, backend, or cloud dependency.
-- **AI Studio runtime availability is not a reason to add a backend. V1 is client-only.**
-- Do not add features merely because they are easy.
-
-## Engineering rules
-
-- Keep graph/data engine independent from Three.js rendering.
-- Never store full source files in IndexedDB. Store compact analysis/index data, serializable directory handles, and preferences only.
-- Project identity must remain stable when the same stored directory is reopened. Node identity must remain stable for unchanged relative paths.
-- Default-exclude generated/heavy folders before descent: `node_modules`, `.git`, build/dist outputs, Gradle/caches, coverage, vendor outputs, etc.
-- Known sensitive files/keys are metadata-only by default.
-- Binary/media assets are metadata-only unless a later explicit feature needs contents.
-- Large source files have a read-size safety limit.
-- Scanner work must be cancellable; recoverable per-file failures become warnings, not whole-project destruction.
-- Do not promise `.gitignore` support until a tested implementation with real semantics exists.
-- Long-running scanner/parser work moves to a Worker/bounded work queue in Milestone 2. Do not introduce unbounded `Promise.all()` over repositories.
-- Never render thousands of graph nodes at once. Use progressive disclosure/focused visible subsets.
-- Dependency graphs come from actual parsing/resolution. Never fake dependencies from hierarchy/proximity.
-- Start dependency parsing with TypeScript/JavaScript only, behind a clean adapter interface.
-- Use deterministic layouts/colors where practical.
-- Structure is a real non-spatial explorer and accessibility/high-density fallback. It must not route to Dependencies.
-- Search includes names + relative paths and must reveal a selected deep node plus its ancestor chain in Graph.
-- No telemetry by default.
-
-## Truthful-UI rule
-
-Every visible control must be:
-1. working;
-2. deliberately disabled with a clear reason; or
-3. omitted.
-
-Do not leave decorative checkboxes, fake tabs, pretend shortcuts, fake project cards, fake graph modes, fake settings, or unsupported status badges.
-
-## Round 1 workflow
-
-Complete **Milestone 1 only**.
-
-1. Run `npm install`.
-2. Run `npm test`.
-3. Run `npm run build`.
-4. Fix every install/type/test/build defect before new product work.
-5. Review Milestone 1 code against the locked design and truthful-UI rule.
-6. Improve/fix Milestone 1 only; do not start dependency parsing or later milestones.
-7. Add/adjust deterministic unit tests for code paths you change where practical.
-8. Re-run `npm test` and `npm run build`.
-9. Update `KNOWN_ISSUES.md` only with real remaining gaps.
-10. Stop and report:
-   - files/areas changed;
-   - final test result;
-   - final build result;
-   - anything still unverified because it requires a real Chromium session;
-   - remaining known issues.
-
-Do **not** claim browser-only flows are verified merely because code compiles. Do **not** start AI, backend, cloud sync, accounts, collaboration, mobile, Git integration, dependency parsing, or later roadmap scope.
+### 5. Progressive Web App (PWA) & Security Headers
+- **Offline Service Worker**: Configured via `vite-plugin-pwa` with precache handling and runtime caching.
+- **PWA Icons**: Pixel-crisp 192x192, 512x512, and maskable 512x512 icons matching the obsidian theme.
+- **Production Headers**: `public/_headers` configured with strict Content Security Policy (CSP), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and immutable asset caching.

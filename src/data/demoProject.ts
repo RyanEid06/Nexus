@@ -1,4 +1,4 @@
-import type { ProjectIndex, ProjectNode } from '../domain/models';
+import type { DependencyEdge, DependencyGraphData, ProjectIndex, ProjectNode } from '../domain/models';
 import { aggregateDirectoryStats, calculateMetrics } from '../services/metrics';
 
 const p = 'demo-atlas';
@@ -38,12 +38,49 @@ const rawNodes: ProjectNode[] = raw.map(([id, parentId, name, kind, sizeBytes, l
   modifiedAt: kind === 'file' ? baseTime - index * 3_600_000 : undefined, analysisStatus: kind === 'file' ? 'analyzed' : undefined,
 }));
 
+const demoEdges: DependencyEdge[] = [
+  { id: 'e1', sourceId: 'App.tsx', sourcePath: 'src/app/App.tsx', targetId: 'Router.tsx', targetPath: 'src/app/Router.tsx', specifier: './Router', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e2', sourceId: 'App.tsx', sourcePath: 'src/app/App.tsx', targetId: 'Sidebar.tsx', targetPath: 'src/components/Sidebar.tsx', specifier: '../components/Sidebar', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e3', sourceId: 'Router.tsx', sourcePath: 'src/app/Router.tsx', targetId: 'Dashboard.tsx', targetPath: 'src/components/Dashboard.tsx', specifier: '../components/Dashboard', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e4', sourceId: 'Router.tsx', sourcePath: 'src/app/Router.tsx', targetId: 'GraphView.tsx', targetPath: 'src/components/GraphView.tsx', specifier: '../components/GraphView', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e5', sourceId: 'Dashboard.tsx', sourcePath: 'src/components/Dashboard.tsx', targetId: 'api.ts', targetPath: 'src/services/api.ts', specifier: '../services/api', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e6', sourceId: 'Dashboard.tsx', sourcePath: 'src/components/Dashboard.tsx', targetPath: 'react', specifier: 'react', type: 'static-import', isExternal: true, isResolved: true },
+  { id: 'e7', sourceId: 'GraphView.tsx', sourcePath: 'src/components/GraphView.tsx', targetId: 'api.ts', targetPath: 'src/services/api.ts', specifier: '../services/api', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e8', sourceId: 'GraphView.tsx', sourcePath: 'src/components/GraphView.tsx', targetPath: 'three', specifier: 'three', type: 'static-import', isExternal: true, isResolved: true },
+  { id: 'e9', sourceId: 'api.ts', sourcePath: 'src/services/api.ts', targetId: 'AuthService.ts', targetPath: 'src/services/AuthService.ts', specifier: './AuthService', type: 'static-import', isExternal: false, isResolved: true },
+  { id: 'e10', sourceId: 'graph.test.ts', sourcePath: 'tests/graph.test.ts', targetId: 'GraphView.tsx', targetPath: 'src/components/GraphView.tsx', specifier: '../src/components/GraphView', type: 'static-import', isExternal: false, isResolved: true },
+];
+
+const demoDependencies: DependencyGraphData = {
+  edges: demoEdges,
+  circularDependencies: [],
+  externalPackages: ['react', 'three'],
+};
+
+const outgoingCounts = new Map<string, number>();
+const incomingCounts = new Map<string, number>();
+for (const edge of demoEdges) {
+  if (!edge.isExternal && edge.isResolved) {
+    outgoingCounts.set(edge.sourceId, (outgoingCounts.get(edge.sourceId) ?? 0) + 1);
+    if (edge.targetId) {
+      incomingCounts.set(edge.targetId, (incomingCounts.get(edge.targetId) ?? 0) + 1);
+    }
+  }
+}
+
+for (const node of rawNodes) {
+  node.outgoingCount = outgoingCounts.get(node.id) ?? 0;
+  node.incomingCount = incomingCounts.get(node.id) ?? 0;
+}
+
 const nodes = aggregateDirectoryStats(rawNodes);
 const metrics = calculateMetrics(nodes);
-metrics.dependencyEdges = 0;
+metrics.dependencyEdges = demoEdges.filter((e) => !e.isExternal && e.isResolved).length;
+metrics.externalPackagesCount = demoDependencies.externalPackages.length;
+metrics.circularDependenciesCount = 0;
 
 export const demoProject: ProjectIndex = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: p,
   name: 'Atlas Demo',
   rootPathLabel: 'Atlas Demo',
@@ -53,4 +90,5 @@ export const demoProject: ProjectIndex = {
   nodes,
   metrics,
   warnings: [],
+  dependencies: demoDependencies,
 };
