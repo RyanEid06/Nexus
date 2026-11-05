@@ -1,0 +1,42 @@
+{
+  "product": "NEXUS",
+  "tagline": "Visualize. Explore. Understand your code.",
+  "version": "0.3.0-gemini-starter",
+  "status": "clean Gemini round-1 starter; Milestone 1 implementation/verification pending",
+  "locked": {
+    "target": "desktop/laptop web app and installable PWA",
+    "mobile": false,
+    "privacy": "local-first; source code is never uploaded by default",
+    "v1_ai": false,
+    "v1_multiplayer": false,
+    "design_reference": "docs/design/NEXUS_FINAL_UI_REFERENCE.png",
+    "primary_visual_language": "obsidian + purple/indigo, restrained glow, professional developer tool"
+  },
+  "v1_core": [
+    "local folder import",
+    "selective local scanning",
+    "3D structure view",
+    "project metrics",
+    "search",
+    "local persistence",
+    "dependency analysis starting with TypeScript/JavaScript",
+    "offline PWA"
+  ],
+  "later": [
+    "Cloudflare sync of NEXUS metadata",
+    "shared visualizations",
+    "collaboration",
+    "optional AI features"
+  ],
+  "foundation_contracts": [
+    "stable project identity via stored directory handles",
+    "deterministic node identity by project and relative path",
+    "truthful indexed-vs-analyzed metrics",
+    "recursive folder statistics",
+    "cancellable selective local scanner with warnings",
+    "real cached project list plus clearly labeled curated demo",
+    "Structure view separate from Dependencies",
+    "client-only V1; no AI Studio backend requirement",
+    "truthful settings: reduced-effects preference changes actual graph rendering"
+  ]
+}

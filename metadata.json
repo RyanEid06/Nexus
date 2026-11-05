@@ -1,6 +1,6 @@
 {
   "name": "NEXUS",
-  "description": "Local-first code architecture explorer and project navigator with obsidian and purple design.",
+  "description": "Local-first desktop codebase visualization and analysis.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

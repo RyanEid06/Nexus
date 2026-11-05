@@ -1,95 +1,95 @@
-# NEXUS System Architecture & Specification Contract
+# GEMINI — BINDING ROUND 1 BUILD CONTRACT FOR NEXUS
 
-> **CONFIDENTIAL & BINDING ARCHITECTURAL SPECIFICATION**  
-> System: **NEXUS — Local-First Code Architecture Visualizer**  
-> Version: `1.0.0-M1`  
-> Target Milestone: **Milestone 1 Only**
+You are the first implementation agent for NEXUS. **Do not freestyle the product, invent capabilities, or hide incomplete work behind polished UI.** This starter contains locked product, architecture, privacy, and visual decisions.
 
----
+## Current environment boundary
 
-## 1. Locked Architectural Principles
+For this first AI Studio round, assume you can only inspect/edit the local project and run local commands such as dependency installation, tests, type checks, and production builds.
 
-### 1.1 Desktop-Only & Client-Only Architecture
-- **Desktop Focus**: NEXUS is engineered exclusively for desktop workstations and high-information-density screens. Mobile viewports, responsive phone collapse, or mobile hamburger touch navigation are explicitly out of scope.
-- **Client-Only Execution**: The application runs 100% inside the client browser. No backend services, cloud sync, proxy servers, databases, or user auth systems exist.
+You do **not** currently have a GitHub repository, remote CI, emulator, browser automation, or a reliable real top-level Chromium session. Therefore:
+- do not ask for or require an emulator;
+- do not require screenshots or manual browser verification;
+- do not create/push a repository or claim CI results;
+- do not claim File System Access behavior has been manually verified if you cannot actually exercise it;
+- leave browser-only acceptance items explicitly marked **UNVERIFIED IN ROUND 1** rather than guessing.
 
-### 1.2 Local-Folder Access Model
-- **Direct Local File System Access**: Operates on real local source code repositories selected by the engineer via the standard Chromium File System Access API (`window.showDirectoryPicker`), with universal directory input fallback (`webkitdirectory`) for compatibility.
-- **In-Memory Handle Lifecycle**: Directory handles and raw file streams are held exclusively in browser memory during the active session.
+A repository and broader validation will be introduced after this first round.
 
-### 1.3 Local-First Privacy Guarantee
-- **Zero Remote Exfiltration**: No code, file paths, telemetry, metadata, or diagnostic payloads ever leave the user's browser.
-- **No Cloud Sync / No External APIs**: Completely functional without network access.
+## Mandatory reading order
 
-### 1.4 Stable Project & Node Identities
-- **Deterministic Project ID**: Derived deterministically from the canonical root directory name and path signature (`proj_[slug]_[hash]`).
-- **Deterministic Node ID**: Every directory and file receives a persistent, canonical identifier formatted as `${projectId}::${normalizedRelativePath}`.
-- **Path Canonicalization**: Paths are normalized to POSIX forward slashes (`/`), eliminating duplicate nodes across platforms and preserving persistent tree addresses.
+1. `docs/design/NEXUS_FINAL_UI_REFERENCE.png`
+2. `docs/design/REFERENCE_NOTES.md`
+3. `docs/specs/PRODUCT_SPEC.md`
+4. `docs/specs/DESIGN_SYSTEM.md`
+5. `docs/specs/ARCHITECTURE.md`
+6. `docs/specs/LOCAL_FILE_ACCESS.md`
+7. `docs/specs/SECURITY_PRIVACY.md`
+8. `docs/specs/DECISIONS.md`
+9. `docs/specs/MILESTONES.md`
+10. `docs/specs/ACCEPTANCE_TESTS.md`
+11. `docs/specs/ROUND1_CHECKLIST.md`
+12. `KNOWN_ISSUES.md`
 
-### 1.5 Zero-Fake-Data & Zero-Dead-Control Rules
-- **No Mock Repositories**: If no folder has been opened by the user, NEXUS displays a pristine Empty/Welcome State. It NEVER renders dummy files, synthetic imports, or fake project graphs.
-- **Zero Dead Controls**: Every button, input, toggle, tab, and filter rendered in the UI is fully wired to live state and functional logic. Features planned for future milestones (e.g., dependency parsing, AI insights, Git history) are omitted from the UI in Milestone 1 rather than present as non-functional placeholders.
+## Non-negotiable product decisions
 
----
+- Product name: **NEXUS**.
+- Desktop/laptop only. Do not build phone UI.
+- Web app + installable PWA.
+- Local-first. Opening a project means **direct local directory access**, not uploading a ZIP or copying gigabytes into browser storage.
+- The obsidian/purple reference is the locked visual direction. Preserve its restraint, hierarchy, typography, spacing, developer-tool feel, and project-explorer emphasis.
+- The reference is not permission to fake absolute paths, ignored-folder sizes, native window controls, or dead controls. Read `REFERENCE_NOTES.md`.
+- Fresh installs must not show fake personal recent projects. Keep one clearly labeled curated demo.
+- V1 has no required AI API, account, multiplayer, backend, or cloud dependency.
+- **AI Studio runtime availability is not a reason to add a backend. V1 is client-only.**
+- Do not add features merely because they are easy.
 
-## 2. Locked NEXUS Obsidian/Purple Visual Design System
+## Engineering rules
 
-The visual design system reflects a high-performance developer workspace:
-- **Palette**:
-  - Obsidian Void (Root Canvas): `#07060A` / `#0B0A10`
-  - Obsidian Surface (Panels & Cards): `#110F19` / `#161422`
-  - Obsidian Elevated (Modals & Hover): `#1D192E` / `#231E38`
-  - Border Violet: `#2D2347` / `#3C2E60`
-  - Border Violet Subtle: `rgba(139, 92, 246, 0.15)`
-  - Accent Purple Glow: `#8B5CF6` (Violet-500), `#A855F7` (Purple-500), `#7C3AED` (Violet-600)
-  - Typography: Crisp white `#F8FAFC` for active headers, muted slate `#94A3B8` for secondary text, dim `#64748B` for metadata.
-  - Monospace: Monospaced code blocks, file paths, byte sizes, and line counters.
-- **Micro-Interactions**:
-  - Violet glowing borders on focused inputs and active items.
-  - Crisp file explorer tree with clean indentation guidelines.
-  - Visual status pill indicating "Local-First • 0 Remote Requests".
+- Keep graph/data engine independent from Three.js rendering.
+- Never store full source files in IndexedDB. Store compact analysis/index data, serializable directory handles, and preferences only.
+- Project identity must remain stable when the same stored directory is reopened. Node identity must remain stable for unchanged relative paths.
+- Default-exclude generated/heavy folders before descent: `node_modules`, `.git`, build/dist outputs, Gradle/caches, coverage, vendor outputs, etc.
+- Known sensitive files/keys are metadata-only by default.
+- Binary/media assets are metadata-only unless a later explicit feature needs contents.
+- Large source files have a read-size safety limit.
+- Scanner work must be cancellable; recoverable per-file failures become warnings, not whole-project destruction.
+- Do not promise `.gitignore` support until a tested implementation with real semantics exists.
+- Long-running scanner/parser work moves to a Worker/bounded work queue in Milestone 2. Do not introduce unbounded `Promise.all()` over repositories.
+- Never render thousands of graph nodes at once. Use progressive disclosure/focused visible subsets.
+- Dependency graphs come from actual parsing/resolution. Never fake dependencies from hierarchy/proximity.
+- Start dependency parsing with TypeScript/JavaScript only, behind a clean adapter interface.
+- Use deterministic layouts/colors where practical.
+- Structure is a real non-spatial explorer and accessibility/high-density fallback. It must not route to Dependencies.
+- Search includes names + relative paths and must reveal a selected deep node plus its ancestor chain in Graph.
+- No telemetry by default.
 
----
+## Truthful-UI rule
 
-## 3. Milestone Specifications & Sequencing
+Every visible control must be:
+1. working;
+2. deliberately disabled with a clear reason; or
+3. omitted.
 
-### Milestone 1: Local Project Ingestion & File Architecture (THIS MILESTONE)
-1. **Directory Ingestion**:
-   - Modern `showDirectoryPicker()` integration with error handling.
-   - Fallback `input[webkitdirectory]` support for non-Chromium or sandboxed environments.
-   - Drag-and-drop local folder zone.
-2. **Deterministic Identity Engine**:
-   - `createProjectId` and `createNodeId` generating immutable hierarchical identities.
-3. **Directory Tree & File System Index**:
-   - Recursive traversal with configurable ignore patterns (`.git`, `node_modules`, `.DS_Store`).
-   - Calculation of recursive metrics: total files, directory count, cumulative byte size.
-   - Categorization by language and file extensions.
-4. **Interactive File Explorer**:
-   - Expandable/collapsible directory hierarchy with remember-state.
-   - Instant search/filter by path query and file extension chips.
-   - Toggles for hidden files (`.*`) and dependency directories (`node_modules`).
-5. **Code & Directory Inspector**:
-   - Instant file preview for UTF-8 text/code files with line numbers and byte metadata.
-   - Directory inspector showing child nodes, cumulative size, and child language distribution.
-6. **Recent Projects Local Vault**:
-   - Safe metadata-only cache in `localStorage` preserving previous project stats without storing file contents.
+Do not leave decorative checkboxes, fake tabs, pretend shortcuts, fake project cards, fake graph modes, fake settings, or unsupported status badges.
 
-### Milestone 2: AST & Code Dependency Parsing (DEFERRED — DO NOT IMPLEMENT IN M1)
-- Import/export extraction via code analysis.
-- Dependency link synthesis between internal project modules.
+## Round 1 workflow
 
-### Milestone 3: Interactive Architecture Force Graph (DEFERRED — DO NOT IMPLEMENT IN M1)
-- Force-directed physics canvas visualizer for file relationships.
+Complete **Milestone 1 only**.
 
-### Milestone 4: Local AI Architecture Insights (DEFERRED — DO NOT IMPLEMENT IN M1)
-- On-device / user-configured AI summarization and architectural analysis.
+1. Run `npm install`.
+2. Run `npm test`.
+3. Run `npm run build`.
+4. Fix every install/type/test/build defect before new product work.
+5. Review Milestone 1 code against the locked design and truthful-UI rule.
+6. Improve/fix Milestone 1 only; do not start dependency parsing or later milestones.
+7. Add/adjust deterministic unit tests for code paths you change where practical.
+8. Re-run `npm test` and `npm run build`.
+9. Update `KNOWN_ISSUES.md` only with real remaining gaps.
+10. Stop and report:
+   - files/areas changed;
+   - final test result;
+   - final build result;
+   - anything still unverified because it requires a real Chromium session;
+   - remaining known issues.
 
-### Milestone 5: Git Change Overlay (DEFERRED — DO NOT IMPLEMENT IN M1)
-- Git status diffs and commit overlays.
-
----
-
-## 4. Verification Protocol
-1. Local unit tests verify path canonicalization, node ID generation, language classification, tree building, and filter predicates.
-2. Production bundle build compiles cleanly with zero TypeScript errors.
-3. Real browser filesystem interactions are executed in live Chromium environments (flagged in Milestone 1 documentation).
+Do **not** claim browser-only flows are verified merely because code compiles. Do **not** start AI, backend, cloud sync, accounts, collaboration, mobile, Git integration, dependency parsing, or later roadmap scope.
