@@ -14,6 +14,7 @@ import { useAppStore } from '../store/useAppStore';
 import { compactBytes } from '../utils/fileTypes';
 import { Inspector } from './Inspector';
 import { WorkspaceTabs } from './WorkspaceTabs';
+import { FileViewer } from './FileViewer';
 
 const ROW_HEIGHT = 38;
 const OVERSCAN = 10;
@@ -185,6 +186,17 @@ export function StructurePage() {
             selectNode(node.parentId);
           }
         }
+      } else if (e.key === 'Enter') {
+        if (currentIndex >= 0) {
+          const node = visibleRows[currentIndex];
+          if (node.kind === 'file') {
+            e.preventDefault();
+            useAppStore.getState().openFileViewer(node.id);
+          } else if (node.kind === 'directory') {
+            e.preventDefault();
+            toggleDirectory(node.id);
+          }
+        }
       }
     },
     [visibleRows, selectedId, collapsedIds, selectNode, toggleDirectory]
@@ -247,18 +259,17 @@ export function StructurePage() {
             const isSelected = node.id === selectedId;
 
             return (
-              <button
+              <div
                 key={node.id}
                 role="treeitem"
                 aria-selected={isSelected}
                 aria-expanded={isDir ? !isCollapsed : undefined}
-                className={isSelected ? 'selected' : ''}
+                className={`structure-row ${isSelected ? 'selected' : ''}`}
                 style={{ height: `${ROW_HEIGHT}px` }}
-                onClick={() => {
-                  if (isDir) {
-                    toggleDirectory(node.id);
-                  }
-                  selectNode(node.id);
+                onClick={() => selectNode(node.id)}
+                onDoubleClick={() => {
+                  if (isDir) toggleDirectory(node.id);
+                  else if (node.kind === 'file') useAppStore.getState().openFileViewer(node.id);
                 }}
               >
                 <span
@@ -266,18 +277,20 @@ export function StructurePage() {
                   style={{ paddingLeft: `${Math.min(node.depth, 14) * 16 + 8}px` }}
                 >
                   {isDir ? (
-                    <span
+                    <button
+                      type="button"
                       className="expander-btn"
                       onClick={(e) => {
                         e.stopPropagation();
                         toggleDirectory(node.id);
                       }}
-                      title={isCollapsed ? 'Expand directory' : 'Collapse directory'}
+                      title={isCollapsed ? 'Expand folder' : 'Collapse folder'}
+                      aria-label={isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
                     >
                       {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                    </span>
+                    </button>
                   ) : (
-                    <span style={{ width: '13px' }} />
+                    <span style={{ width: '16px', display: 'inline-block' }} />
                   )}
 
                   {isProj ? (
@@ -299,15 +312,19 @@ export function StructurePage() {
 
                 <span>{node.loc ? node.loc.toLocaleString() : '—'}</span>
                 <span>{node.sizeBytes ? compactBytes(node.sizeBytes) : '—'}</span>
-              </button>
+              </div>
             );
           })}
 
           {bottomPadding > 0 && <div style={{ height: `${bottomPadding}px` }} />}
         </div>
+
+        {/* Real File Viewer Modal */}
+        <FileViewer />
       </section>
 
       <Inspector />
     </main>
   );
 }
+

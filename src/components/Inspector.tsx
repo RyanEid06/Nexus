@@ -88,20 +88,39 @@ export function Inspector() {
         )}
       </dl>
 
-      {node.kind === 'file' && (outgoingCount > 0 || incomingCount > 0) && (
-        <button
-          className="action-btn"
-          style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
-          onClick={() => setPage('dependencies')}
-        >
-          View in Dependencies Explorer →
-        </button>
+      {node.kind === 'file' && (
+        <div className="inspector-actions">
+          <button
+            className="action-btn primary"
+            style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
+            onClick={() => useAppStore.getState().openFileViewer(node.id)}
+          >
+            <FileCode2 size={15} /> Open File Preview
+          </button>
+          {(outgoingCount > 0 || incomingCount > 0) && (
+            <button
+              className="action-btn"
+              style={{ width: '100%', marginTop: '6px', justifyContent: 'center' }}
+              onClick={() => setPage('dependencies')}
+            >
+              View in Dependencies Explorer →
+            </button>
+          )}
+        </div>
       )}
 
-      <h3>Direct child items</h3>
+      <h3>Direct child items ({children.length})</h3>
       <div className="child-list">
         {children.slice(0, 12).map((child) => (
-          <button key={child.id} onClick={() => useAppStore.getState().selectNode(child.id)}>
+          <button
+            key={child.id}
+            onClick={() => useAppStore.getState().selectNode(child.id)}
+            onDoubleClick={() => {
+              if (child.kind === 'file') useAppStore.getState().openFileViewer(child.id);
+              else useAppStore.getState().toggleExpandNode(child.id);
+            }}
+            title={child.kind === 'file' ? 'Click to select · Double-click to open' : 'Click to select'}
+          >
             {child.kind === 'directory' ? <Folder size={15} /> : <FileCode2 size={15} />}
             <span>{child.name}</span>
             <small>{child.loc ? `${child.loc.toLocaleString()} lines` : ''}</small>
@@ -109,10 +128,20 @@ export function Inspector() {
         ))}
         {!children.length && <p className="muted">No child items.</p>}
         {children.length > 12 && (
-          <p className="muted">{children.length - 12} more direct children. Use Structure or Search to inspect them.</p>
+          <button
+            className="view-all-children-btn"
+            onClick={() => {
+              useAppStore.getState().selectNode(node.id);
+              useAppStore.getState().expandNode(node.id);
+              setPage('structure');
+            }}
+          >
+            View all {children.length.toLocaleString()} children in Structure →
+          </button>
         )}
       </div>
     </aside>
   );
 }
+
 

@@ -3,11 +3,14 @@
 ## Completed V1 Scope
 
 - **Core Desktop Architecture**: Obsidian/purple theme, local File System Access, IndexedDB cache with typed errors, safe folder traversal with entry limits, and physical LOC metrics.
+- **Approved 2D Map & Redesigned 3D Visualization**: Radial tree layout with central glowing project root, capsule directory hubs, outward cluster expansion, child badges, solid hierarchy links, and curved dashed dependency links matching `REFERENCE_ART/2D_APPROVED.png`. Upgraded 3D scene preserving golden-angle circular staircase layout with Saturn-ring root, beveled hub platforms, and luminous file markers.
+- **Local File Viewer**: Read-on-demand local file preview modal with token-based syntax highlighting, formatted Markdown renderer, in-file search, clipboard copy, "Show on Map" deep-linking, and strict safety limits (size caps, binary skips, sensitive file exclusions). Never persists raw file contents into IndexedDB.
 - **Incremental Refresh Engine**: Persisted per-project analysis configuration, fingerprint-based unchanged file reuse with raw specifier caching, handle reconnection lifecycle, and fatal root access protection.
-- **Virtualized Structure Explorer**: High-density hierarchical view rendering deep folder trees with windowing, expand/collapse all, and full keyboard arrow navigation.
+- **Virtualized Structure Explorer**: High-density hierarchical view rendering deep folder trees with windowing, expand/collapse all, decoupled chevron toggling, and full keyboard arrow navigation.
 - **Production Dependency Engine**: Token-aware TypeScript/JavaScript dependency extraction (static, multiline, export-from, require, dynamic import), JSONC tsconfig alias resolution (`@/*`, `baseUrl`), external package grouping, Tarjan's Strongly Connected Components (SCC) circular dependency group detection, and BFS shortest-path routing.
+- **Architectural Topology & Search**: Deterministic topology metrics (most connected files, highest fan-in/fan-out, biggest directories), fuzzy search ranking with path matching and keyboard actions, and bidirectional exploration history (Back/Forward).
 - **Off-Thread Analysis**: Web Worker processing for CPU-intensive dependency parsing and graph resolution with bounded batches and AbortSignal cancellation.
-- **Safe Relocation**: Structural validation preventing accidental folder overwrite or project identity corruption.
+- **Safe Relocation & WebGL Safeguard**: Structural validation preventing accidental folder overwrite, and fallback error boundary offering 2D Map or Structure views on WebGL context failure.
 - **PWA & Production Packaging**: Offline service worker caching, PWA icons, security headers (`public/_headers`), zero backend/secrets requirements, and Cloudflare Pages deployment readiness.
 
 ---

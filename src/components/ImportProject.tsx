@@ -132,15 +132,32 @@ export function ImportProject({
           <X size={16} />
         </button>
 
-        <div className="steps">
-          <span className="done">
-            <Check size={13} /> Select Project
-          </span>
+        <div className="steps" role="navigation" aria-label="Import progress">
+          {folder ? (
+            <span className="done">
+              <Check size={13} /> Select Project
+            </span>
+          ) : (
+            <span className="current">1 Select Project</span>
+          )}
           <i />
-          <span className="current">2 Analysis Rules</span>
+          {busy ? (
+            <span className="done">
+              <Check size={13} /> Analysis Rules
+            </span>
+          ) : folder ? (
+            <span className="current">2 Analysis Rules</span>
+          ) : (
+            <span>2 Analysis Rules</span>
+          )}
           <i />
-          <span>3 Analyze</span>
+          {busy ? (
+            <span className="current">3 Analyze</span>
+          ) : (
+            <span>3 Analyze</span>
+          )}
         </div>
+
 
         <h1>Configure Project Analysis</h1>
         <p>

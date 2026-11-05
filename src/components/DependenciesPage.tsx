@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { WorkspaceTabs } from './WorkspaceTabs';
+import { FileViewer } from './FileViewer';
 import { findShortestDependencyPath } from '../services/dependencies';
 import type { DependencyEdge } from '../domain/models';
 
@@ -232,15 +233,26 @@ export function DependenciesPage() {
                       <small>FOCUSED MODULE</small>
                       <h2>{currentFocusedPath}</h2>
                     </div>
-                    <button
-                      className="ghost small"
-                      onClick={() => {
-                        setSourcePath(currentFocusedPath);
-                        setActiveTab('path-finder');
-                      }}
-                    >
-                      Use in Path Finder →
-                    </button>
+                    <div className="deps-focus-actions">
+                      <button
+                        className="primary small"
+                        onClick={() => {
+                          const node = project.nodes.find((n) => n.path === currentFocusedPath);
+                          if (node) useAppStore.getState().openFileViewer(node.id);
+                        }}
+                      >
+                        <FileCode2 size={13} /> Open File
+                      </button>
+                      <button
+                        className="ghost small"
+                        onClick={() => {
+                          setSourcePath(currentFocusedPath);
+                          setActiveTab('path-finder');
+                        }}
+                      >
+                        Use in Path Finder →
+                      </button>
+                    </div>
                   </div>
 
                   {/* Outgoing Dependencies */}
@@ -513,6 +525,8 @@ export function DependenciesPage() {
           </section>
         )}
       </div>
+      {/* Real File Viewer Modal */}
+      <FileViewer />
     </main>
   );
 }

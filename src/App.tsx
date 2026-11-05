@@ -18,11 +18,18 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && useAppStore.getState().project) {
         event.preventDefault();
         useAppStore.getState().setPage('search');
+      } else if (event.altKey && event.key === 'ArrowLeft') {
+        event.preventDefault();
+        useAppStore.getState().navigateBack();
+      } else if (event.altKey && event.key === 'ArrowRight') {
+        event.preventDefault();
+        useAppStore.getState().navigateForward();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
 
   const protectedPage = page !== 'projects' && page !== 'settings';
   const effectivePage = protectedPage && !project ? 'projects' : page;
