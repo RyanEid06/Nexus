@@ -191,24 +191,38 @@ export async function removeProject(id: string): Promise<void> {
 
 export async function getProjectHandle(projectId: string): Promise<LocalDirectoryHandle | undefined> {
   try {
-    return (await db.handles.get(projectId))?.handle;
-  } catch {
-    return undefined;
+    const record = await db.handles.get(projectId);
+    return record?.handle;
+  } catch (error) {
+    console.error('Failed to retrieve project handle from IndexedDB:', error);
+    throw new StorageError(
+      `Database error retrieving folder handle: ${error instanceof Error ? error.message : 'Database error'}`,
+      error
+    );
   }
 }
 
 export async function findProjectIdForHandle(handle: LocalDirectoryHandle): Promise<string | undefined> {
+  let existing: StoredHandle[];
   try {
-    const existing = await db.handles.toArray();
-    for (const item of existing) {
-      try {
-        if (item.handle.isSameEntry && (await item.handle.isSameEntry(handle))) return item.projectId;
-      } catch {
-        // A stale/invalid stored handle should not block importing
+    existing = await db.handles.toArray();
+  } catch (error) {
+    console.error('Failed to query stored handles from IndexedDB:', error);
+    throw new StorageError(
+      `Database error querying project handles: ${error instanceof Error ? error.message : 'Database error'}`,
+      error
+    );
+  }
+
+  for (const item of existing) {
+    try {
+      if (item.handle.isSameEntry && (await item.handle.isSameEntry(handle))) {
+        return item.projectId;
       }
+    } catch {
+      // Stale or revoked handle permission on an individual entry is a normal browser state,
+      // not a database failure; continue checking remaining items.
     }
-  } catch {
-    // Ignore error
   }
   return undefined;
 }
@@ -227,7 +241,8 @@ export async function getProjectHandleStatus(projectId: string): Promise<HandleC
     const perm = await handle.queryPermission({ mode: 'read' });
     if (perm === 'granted') return 'connected';
     return 'permission-required';
-  } catch {
+  } catch (error) {
+    if (error instanceof StorageError) throw error;
     return 'unavailable';
   }
 }
@@ -272,50 +287,122 @@ export async function savePreferences(value: NexusPreferences): Promise<void> {
 /**
  * Safely inspects a candidate directory before relocating a project to avoid
  * silently corrupting an existing project ID with an entirely unrelated repository.
+ * Uses multivariate structural fingerprinting (depth 1, depth 2, non-generic files)
+ * without reading raw source file contents.
  */
 export async function validateRelocationCandidate(
   existing: ProjectIndex,
   candidateHandle: LocalDirectoryHandle
 ): Promise<void> {
   // If stored handle exists and isSameEntry returns true, identity is confirmed
-  const storedHandle = await getProjectHandle(existing.id);
-  if (storedHandle?.isSameEntry) {
-    try {
-      if (await storedHandle.isSameEntry(candidateHandle)) {
-        return;
-      }
-    } catch {
-      // Stored handle might be inaccessible
+  try {
+    const storedHandle = await getProjectHandle(existing.id);
+    if (storedHandle?.isSameEntry && (await storedHandle.isSameEntry(candidateHandle))) {
+      return;
     }
+  } catch (err) {
+    if (err instanceof StorageError) throw err;
+    // Stored handle might be inaccessible or permission revoked; fall through to structural validation
   }
 
-  // Inspect candidate directory entries safely
+  // Inspect candidate directory entries safely (depth 1)
   const candidateNames = new Set<string>();
+  const candidateDirs = new Map<string, LocalDirectoryHandle>();
   let count = 0;
   try {
     for await (const entry of candidateHandle.values()) {
       candidateNames.add(entry.name);
+      if (entry.kind === 'directory') {
+        candidateDirs.set(entry.name, entry as LocalDirectoryHandle);
+      }
       count++;
       if (count > 200) break;
     }
   } catch (err) {
     throw new StorageError(
-      `Cannot inspect candidate folder "${candidateHandle.name}": ${err instanceof Error ? err.message : 'Access error'}`
+      `Cannot inspect candidate folder "${candidateHandle.name}": ${err instanceof Error ? err.message : 'Access error'}`,
+      err
     );
   }
 
-  // Get depth-1 child names from existing project
-  const existingDepth1 = existing.nodes
-    .filter((n) => n.depth === 1)
-    .map((n) => n.name);
+  if (candidateNames.size === 0) {
+    throw new ProjectMismatchError(
+      `Selected folder "${candidateHandle.name}" is empty and does not match project "${existing.name}". To open this folder, import it as a new project instead.`
+    );
+  }
 
-  if (existingDepth1.length > 0) {
-    const matched = existingDepth1.filter((name) => candidateNames.has(name));
-    if (matched.length === 0) {
-      throw new ProjectMismatchError(
-        `Selected folder "${candidateHandle.name}" does not match project "${existing.name}". None of the expected project files or directories were found in this location.`
-      );
+  // Inspect depth-2 entries inside matching subdirectories without reading file contents
+  const candidateDepth2Paths = new Set<string>();
+  for (const [dirName, dirHandle] of candidateDirs) {
+    const isMatchingDir = existing.nodes.some((n) => n.depth === 1 && n.kind === 'directory' && n.name === dirName);
+    if (isMatchingDir && dirHandle.values) {
+      let subCount = 0;
+      try {
+        for await (const subEntry of dirHandle.values()) {
+          candidateDepth2Paths.add(`${dirName}/${subEntry.name}`);
+          subCount++;
+          if (subCount > 100) break;
+        }
+      } catch {
+        // Subdirectory read error
+      }
     }
+  }
+
+  // Get depth-1 and depth-2 nodes from existing project index
+  const existingDepth1Nodes = existing.nodes.filter((n) => n.depth === 1);
+  const existingDepth1Names = new Set(existingDepth1Nodes.map((n) => n.name));
+  const existingDepth2Nodes = existing.nodes.filter((n) => n.depth === 2);
+  const existingDepth2Paths = new Set(existingDepth2Nodes.map((n) => n.path));
+
+  const matchedDepth1 = Array.from(existingDepth1Names).filter((name) => candidateNames.has(name));
+  const matchedDepth2 = Array.from(existingDepth2Paths).filter((path) => candidateDepth2Paths.has(path));
+
+  // Common generic names that appear in almost any JS/TS or code repository:
+  const GENERIC_NAMES = new Set([
+    'src',
+    'package.json',
+    'README.md',
+    'readme.md',
+    '.gitignore',
+    'dist',
+    'build',
+    'public',
+    'docs',
+  ]);
+
+  const nonGenericDepth1Matches = matchedDepth1.filter((name) => !GENERIC_NAMES.has(name));
+  const rootNameMatches = Boolean(
+    candidateHandle.name &&
+    (candidateHandle.name.toLowerCase() === existing.name.toLowerCase() ||
+     candidateHandle.name.toLowerCase() === existing.rootPathLabel.toLowerCase())
+  );
+
+  let isConfidentMatch = false;
+
+  if (matchedDepth2.length >= 1) {
+    // Structural internal files match!
+    if (matchedDepth2.length >= 2 || matchedDepth1.length >= 2 || (existingDepth2Paths.size > 0 && matchedDepth2.length === existingDepth2Paths.size)) {
+      isConfidentMatch = true;
+    }
+  } else if (nonGenericDepth1Matches.length >= 2) {
+    // Multiple distinctive non-generic files at root matched
+    isConfidentMatch = true;
+  } else if (nonGenericDepth1Matches.length >= 1 && (matchedDepth1.length >= 3 || rootNameMatches)) {
+    isConfidentMatch = true;
+  } else if (existingDepth1Names.size > 0 && existingDepth2Paths.size === 0) {
+    // Flat project with no subdirectories
+    const matchRatio = matchedDepth1.length / existingDepth1Names.size;
+    if (matchRatio >= 0.5 && nonGenericDepth1Matches.length >= 1) {
+      isConfidentMatch = true;
+    }
+  }
+
+  // Reject if not confident, or if ONLY generic names (src, package.json, README) matched without any depth-2 match
+  if (!isConfidentMatch || (nonGenericDepth1Matches.length === 0 && matchedDepth2.length === 0)) {
+    throw new ProjectMismatchError(
+      `Selected folder "${candidateHandle.name}" does not match project "${existing.name}". Generic folder or file names (like src or package.json) are not sufficient to confirm identity. To open this folder, import it as a new project instead.`
+    );
   }
 }
 

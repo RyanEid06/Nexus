@@ -9,16 +9,22 @@ import type { DependencyGraphData, RawSpecifier } from '../domain/models';
 import type { TsConfigAliases } from '../utils/jsonc';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysisWorker';
 
-class AnalysisWorkerBridge {
+export interface PendingHandler<T> {
+  resolve: (val: T) => void;
+  reject: (err: Error) => void;
+  cleanup: () => void;
+}
+
+export class AnalysisWorkerBridge {
   private worker: Worker | null = null;
-  private pending = new Map<string, { resolve: (val: any) => void; reject: (err: Error) => void }>();
+  private pending = new Map<string, PendingHandler<any>>();
   private nextId = 1;
 
   constructor() {
     this.initWorker();
   }
 
-  private initWorker(): void {
+  public initWorker(): void {
     if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
       try {
         this.worker = new Worker(new URL('../workers/analysisWorker.ts', import.meta.url), {
@@ -29,6 +35,7 @@ class AnalysisWorkerBridge {
           const handler = this.pending.get(res.requestId);
           if (!handler) return;
           this.pending.delete(res.requestId);
+          handler.cleanup();
 
           if (res.type === 'PARSE_BATCH_SUCCESS') {
             handler.resolve(res.results);
@@ -39,7 +46,7 @@ class AnalysisWorkerBridge {
           }
         };
         this.worker.onerror = (err) => {
-          console.warn('Analysis worker error, will fall back if needed:', err);
+          this.handleWorkerCrash(err);
         };
       } catch {
         this.worker = null;
@@ -47,15 +54,67 @@ class AnalysisWorkerBridge {
     }
   }
 
+  /**
+   * Internal handler when the Web Worker encounters an unrecoverable error or crash.
+   * Immediately rejects all pending requests, cleans up abort listeners, clears the pending map,
+   * terminates the dead worker, and resets worker state.
+   */
+  public handleWorkerCrash(err?: unknown): void {
+    const errorMsg =
+      err instanceof Error
+        ? `Analysis Web Worker failed: ${err.message}`
+        : 'Analysis Web Worker encountered a fatal error';
+
+    // Terminate worker if still alive
+    if (this.worker) {
+      try {
+        this.worker.terminate();
+      } catch {
+        // Ignore termination errors
+      }
+      this.worker = null;
+    }
+
+    // Reject all pending promises and run cleanup
+    const pendingList = Array.from(this.pending.values());
+    this.pending.clear();
+    for (const handler of pendingList) {
+      try {
+        handler.cleanup();
+      } catch {
+        // Ignore cleanup errors
+      }
+      handler.reject(new Error(errorMsg));
+    }
+  }
+
   public terminate(): void {
     if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-      for (const [, handler] of this.pending) {
-        handler.reject(new DOMException('Worker terminated', 'AbortError'));
+      try {
+        this.worker.terminate();
+      } catch {
+        // Ignore
       }
-      this.pending.clear();
+      this.worker = null;
     }
+    const pendingList = Array.from(this.pending.values());
+    this.pending.clear();
+    for (const handler of pendingList) {
+      try {
+        handler.cleanup();
+      } catch {
+        // Ignore
+      }
+      handler.reject(new DOMException('Worker terminated', 'AbortError'));
+    }
+  }
+
+  public getPendingCount(): number {
+    return this.pending.size;
+  }
+
+  public isWorkerActive(): boolean {
+    return this.worker !== null;
   }
 
   public async parseBatch(items: BatchItem[], signal?: AbortSignal): Promise<ParsedBatchResult[]> {
@@ -63,14 +122,26 @@ class AnalysisWorkerBridge {
     if (!items.length) return [];
 
     if (!this.worker) {
-      // In-process fallback (e.g. Node test environment)
+      this.initWorker();
+    }
+
+    if (!this.worker) {
+      // In-process fallback (e.g. Node test environment or unsupported browser)
       return parseSourceBatch(items);
     }
 
     const requestId = `req_${this.nextId++}`;
     return new Promise<ParsedBatchResult[]>((resolve, reject) => {
-      const abortHandler = () => {
+      let abortHandler: (() => void) | null = null;
+      const cleanup = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      abortHandler = () => {
         this.pending.delete(requestId);
+        cleanup();
         reject(new DOMException('Operation was aborted', 'AbortError'));
       };
 
@@ -79,14 +150,9 @@ class AnalysisWorkerBridge {
       }
 
       this.pending.set(requestId, {
-        resolve: (val) => {
-          if (signal) signal.removeEventListener('abort', abortHandler);
-          resolve(val);
-        },
-        reject: (err) => {
-          if (signal) signal.removeEventListener('abort', abortHandler);
-          reject(err);
-        },
+        resolve,
+        reject,
+        cleanup,
       });
 
       const message: WorkerRequest = {
@@ -94,7 +160,27 @@ class AnalysisWorkerBridge {
         requestId,
         items,
       };
-      this.worker?.postMessage(message);
+
+      try {
+        const activeWorker = this.worker;
+        if (!activeWorker) throw new Error('Worker unavailable');
+        activeWorker.postMessage(message);
+      } catch {
+        // postMessage threw synchronously (e.g. serialization failure or dead worker)
+        this.pending.delete(requestId);
+        cleanup();
+        if (signal?.aborted) {
+          reject(new DOMException('Operation was aborted', 'AbortError'));
+          return;
+        }
+        // Fall back to synchronous pure parser
+        try {
+          const syncResult = parseSourceBatch(items);
+          resolve(syncResult);
+        } catch (syncErr) {
+          reject(syncErr instanceof Error ? syncErr : new Error(String(syncErr)));
+        }
+      }
     });
   }
 
@@ -107,13 +193,25 @@ class AnalysisWorkerBridge {
     if (signal?.aborted) throw new DOMException('Operation was aborted', 'AbortError');
 
     if (!this.worker) {
+      this.initWorker();
+    }
+
+    if (!this.worker) {
       return computeGraphData(files, allFilePaths, aliases);
     }
 
     const requestId = `req_${this.nextId++}`;
     return new Promise<DependencyGraphData>((resolve, reject) => {
-      const abortHandler = () => {
+      let abortHandler: (() => void) | null = null;
+      const cleanup = () => {
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      abortHandler = () => {
         this.pending.delete(requestId);
+        cleanup();
         reject(new DOMException('Operation was aborted', 'AbortError'));
       };
 
@@ -122,14 +220,9 @@ class AnalysisWorkerBridge {
       }
 
       this.pending.set(requestId, {
-        resolve: (val) => {
-          if (signal) signal.removeEventListener('abort', abortHandler);
-          resolve(val);
-        },
-        reject: (err) => {
-          if (signal) signal.removeEventListener('abort', abortHandler);
-          reject(err);
-        },
+        resolve,
+        reject,
+        cleanup,
       });
 
       const message: WorkerRequest = {
@@ -139,7 +232,26 @@ class AnalysisWorkerBridge {
         allFilePaths,
         aliases,
       };
-      this.worker?.postMessage(message);
+
+      try {
+        const activeWorker = this.worker;
+        if (!activeWorker) throw new Error('Worker unavailable');
+        activeWorker.postMessage(message);
+      } catch {
+        // postMessage threw synchronously
+        this.pending.delete(requestId);
+        cleanup();
+        if (signal?.aborted) {
+          reject(new DOMException('Operation was aborted', 'AbortError'));
+          return;
+        }
+        try {
+          const syncResult = computeGraphData(files, allFilePaths, aliases);
+          resolve(syncResult);
+        } catch (syncErr) {
+          reject(syncErr instanceof Error ? syncErr : new Error(String(syncErr)));
+        }
+      }
     });
   }
 }

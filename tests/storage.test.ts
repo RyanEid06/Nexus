@@ -135,4 +135,42 @@ describe('Storage Truthfulness & Error Handling', () => {
     expect(list.length).toBe(1);
     expect(list[0].id).toBe('test-p1');
   });
+
+  it('getProjectHandle returns undefined when no handle exists, but throws StorageError on database failure', async () => {
+    const { getProjectHandle } = await import('../src/storage/db');
+
+    // Normal absence
+    const handle = await getProjectHandle('non-existent-id');
+    expect(handle).toBeUndefined();
+
+    // Database error
+    const spy = vi.spyOn(db.handles, 'get').mockImplementation(() => {
+      throw new Error('IndexedDB handles table locked');
+    });
+
+    await expect(getProjectHandle('any-id')).rejects.toThrow(StorageError);
+    spy.mockRestore();
+  });
+
+  it('findProjectIdForHandle returns undefined when no handle matches, but throws StorageError on database failure', async () => {
+    const { findProjectIdForHandle } = await import('../src/storage/db');
+
+    const mockHandle = {
+      kind: 'directory' as const,
+      name: 'some-dir',
+      values: async function* () {},
+    };
+
+    // Normal empty/no-match
+    const found = await findProjectIdForHandle(mockHandle as any);
+    expect(found).toBeUndefined();
+
+    // Database error
+    const spy = vi.spyOn(db.handles, 'toArray').mockImplementation(() => {
+      throw new Error('Database read failure in handles');
+    });
+
+    await expect(findProjectIdForHandle(mockHandle as any)).rejects.toThrow(StorageError);
+    spy.mockRestore();
+  });
 });

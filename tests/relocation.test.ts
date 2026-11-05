@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import 'fake-indexeddb/auto';
 import {
   ProjectMismatchError,
   validateRelocationCandidate,
@@ -63,6 +64,13 @@ describe('relocation safety', () => {
     warnings: [],
   };
 
+  beforeEach(async () => {
+    const { db } = await import('../src/storage/db');
+    await db.projects.clear();
+    await db.nodes.clear();
+    await db.handles.clear();
+  });
+
   it('passes validation when candidate folder contains matching project files', async () => {
     const candidate = createMockDirectory('atlas-app-relocated', [
       createMockFile('package.json'),
@@ -70,6 +78,28 @@ describe('relocation safety', () => {
     ]);
 
     await expect(validateRelocationCandidate(existingProject, candidate)).resolves.toBeUndefined();
+  });
+
+  it('passes validation immediately when isSameEntry returns true', async () => {
+    const { db } = await import('../src/storage/db');
+    const sameEntryFn = vi.fn().mockResolvedValue(true);
+    const candidate = createMockDirectory('atlas-app-moved', [], sameEntryFn);
+
+    const storedHandle = {
+      kind: 'directory' as const,
+      name: 'atlas-app',
+      isSameEntry: sameEntryFn,
+      values: async function* () {},
+    };
+
+    const spy = vi.spyOn(db.handles, 'get').mockResolvedValue({
+      projectId: existingProject.id,
+      handle: storedHandle as any,
+    });
+
+    await expect(validateRelocationCandidate(existingProject, candidate)).resolves.toBeUndefined();
+    expect(sameEntryFn).toHaveBeenCalledWith(candidate);
+    spy.mockRestore();
   });
 
   it('rejects candidate folder when it contains none of the existing project files', async () => {
@@ -83,9 +113,67 @@ describe('relocation safety', () => {
     await expect(validateRelocationCandidate(existingProject, wrongRepo)).rejects.toThrow(ProjectMismatchError);
   });
 
+  it('rejects unrelated JS repository that also has src and package.json but different files', async () => {
+    // Both repositories share generic names ('src', 'package.json'),
+    // but the candidate contains server-side express files, not atlas-app's App.tsx
+    const unrelatedJsRepo = createMockDirectory('unrelated-express-api', [
+      createMockFile('package.json'),
+      createMockDirectory('src', [createMockFile('server.js'), createMockFile('routes.js')]),
+    ]);
+
+    await expect(validateRelocationCandidate(existingProject, unrelatedJsRepo)).rejects.toThrow(ProjectMismatchError);
+  });
+
+  it('rejects candidate sharing ONLY generic "src" folder', async () => {
+    const srcOnlyCandidate = createMockDirectory('other-project', [
+      createMockDirectory('src', [createMockFile('main.c'), createMockFile('utils.c')]),
+    ]);
+
+    await expect(validateRelocationCandidate(existingProject, srcOnlyCandidate)).rejects.toThrow(ProjectMismatchError);
+  });
+
+  it('rejects candidate sharing ONLY generic "package.json"', async () => {
+    const pkgOnlyCandidate = createMockDirectory('other-lib', [
+      createMockFile('package.json'),
+      createMockDirectory('lib', [createMockFile('index.js')]),
+    ]);
+
+    await expect(validateRelocationCandidate(existingProject, pkgOnlyCandidate)).rejects.toThrow(ProjectMismatchError);
+  });
+
   it('rejects empty candidate folder when existing project had files', async () => {
     const emptyFolder = createMockDirectory('empty-dir', []);
 
     await expect(validateRelocationCandidate(existingProject, emptyFolder)).rejects.toThrow(ProjectMismatchError);
+  });
+
+  it('leaves existing project metadata, nodes, and directory handle completely untouched on validation failure', async () => {
+    const dbModule = await import('../src/storage/db');
+    const originalHandle = createMockDirectory('atlas-original', [
+      createMockFile('package.json'),
+      createMockDirectory('src', [createMockFile('App.tsx')]),
+    ]);
+
+    // Save existing project in database without handle
+    await dbModule.saveProject(existingProject);
+    const getHandleSpy = vi.spyOn(dbModule, 'getProjectHandle').mockResolvedValue(originalHandle);
+
+    // Attempt relocation with mismatched repo
+    const mismatchedCandidate = createMockDirectory('random-repo', [
+      createMockFile('go.mod'),
+      createMockFile('main.go'),
+    ]);
+
+    await expect(dbModule.validateRelocationCandidate(existingProject, mismatchedCandidate)).rejects.toThrow(ProjectMismatchError);
+
+    // Verify stored project, nodes, and handle are completely untouched in IndexedDB
+    const stored = await dbModule.loadProject(existingProject.id);
+    expect(stored).toBeDefined();
+    expect(stored?.name).toBe('atlas-app');
+    expect(stored?.nodes.length).toBe(existingProject.nodes.length);
+
+    const storedHandle = await dbModule.getProjectHandle(existingProject.id);
+    expect(storedHandle?.name).toBe('atlas-original');
+    getHandleSpy.mockRestore();
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseSourceBatch, computeGraphData } from '../src/services/analysisEngine';
 import { workerBridge } from '../src/services/workerClient';
 
@@ -64,5 +64,89 @@ describe('worker and analysis engine', () => {
     await expect(
       workerBridge.resolveGraph([], [], undefined, controller.signal)
     ).rejects.toThrow();
+  });
+
+  it('rejects all pending work and clears pending map when worker encounters fatal error', async () => {
+    const { AnalysisWorkerBridge } = await import('../src/services/workerClient');
+    const bridge = new AnalysisWorkerBridge();
+
+    // Mock an active worker
+    const mockWorker = {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      onmessage: null as any,
+      onerror: null as any,
+    };
+    (bridge as any).worker = mockWorker;
+
+    // Start a parse batch request that would await worker response
+    const parsePromise = bridge.parseBatch([{ id: '1', path: 'file.ts', text: 'const a = 1;' }]);
+    expect(bridge.getPendingCount()).toBe(1);
+
+    // Simulate worker crashing
+    bridge.handleWorkerCrash(new Error('Out of memory'));
+
+    await expect(parsePromise).rejects.toThrow('Analysis Web Worker failed: Out of memory');
+    expect(bridge.getPendingCount()).toBe(0);
+    expect(mockWorker.terminate).toHaveBeenCalled();
+    expect(bridge.isWorkerActive()).toBe(false);
+  });
+
+  it('subsequent calls after worker crash execute cleanly via synchronous fallback without hanging', async () => {
+    const { AnalysisWorkerBridge } = await import('../src/services/workerClient');
+    const bridge = new AnalysisWorkerBridge();
+
+    // Simulate crash
+    bridge.handleWorkerCrash(new Error('Fatal worker crash'));
+    expect(bridge.isWorkerActive()).toBe(false);
+
+    // New work should succeed via synchronous engine fallback without hanging
+    const result = await bridge.parseBatch([{ id: '1', path: 'src/main.ts', text: 'import x from "./x";' }]);
+    expect(result.length).toBe(1);
+    expect(result[0].rawSpecifiers).toEqual([{ specifier: './x', type: 'static-import' }]);
+    expect(bridge.getPendingCount()).toBe(0);
+  });
+
+  it('handles postMessage throwing synchronously without hanging and falls back to pure engine', async () => {
+    const { AnalysisWorkerBridge } = await import('../src/services/workerClient');
+    const bridge = new AnalysisWorkerBridge();
+
+    const mockWorker = {
+      postMessage: vi.fn().mockImplementation(() => {
+        throw new Error('DataCloneError: message cannot be cloned');
+      }),
+      terminate: vi.fn(),
+      onmessage: null,
+      onerror: null,
+    };
+    (bridge as any).worker = mockWorker;
+
+    // postMessage fails immediately, but the promise resolves via synchronous fallback without hanging!
+    const result = await bridge.parseBatch([{ id: '1', path: 'src/data.ts', text: 'export const num = 42;' }]);
+    expect(result.length).toBe(1);
+    expect(result[0].loc).toBe(1);
+    expect(bridge.getPendingCount()).toBe(0);
+  });
+
+  it('aborted signal cancels pending request and removes listener', async () => {
+    const { AnalysisWorkerBridge } = await import('../src/services/workerClient');
+    const bridge = new AnalysisWorkerBridge();
+
+    const mockWorker = {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      onmessage: null,
+      onerror: null,
+    };
+    (bridge as any).worker = mockWorker;
+
+    const controller = new AbortController();
+    const promise = bridge.parseBatch([{ id: '1', path: 'src/heavy.ts', text: 'const z = 100;' }], controller.signal);
+
+    expect(bridge.getPendingCount()).toBe(1);
+    controller.abort();
+
+    await expect(promise).rejects.toThrow('Operation was aborted');
+    expect(bridge.getPendingCount()).toBe(0);
   });
 });
