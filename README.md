@@ -39,7 +39,7 @@ NEXUS is a **desktop-first, local-first 3D codebase visualizer and architectural
 ## Development & Verification
 
 ### Prerequisites
-- Node.js 20+ (or Node 22.14.0 as specified in `.node-version`)
+- Node.js >=22 (Node 22.14.0 as specified in `.node-version` and `package.json`)
 - npm 10+
 
 ### Setup & Testing

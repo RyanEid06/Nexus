@@ -7,7 +7,7 @@ import {
   Layers,
 } from 'lucide-react';
 import type { Node2DPosition } from '../services/layout';
-import { computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
+import { buildGraphIndex, computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor } from '../utils/fileTypes';
 
@@ -72,18 +72,20 @@ export function ProjectGraph2D({
     }
   }, []);
 
-  // Compute unified graph viewport
+  const graphIndex = useMemo(() => (project ? buildGraphIndex(project) : null), [project]);
+
+  // Compute unified graph viewport (decoupled from hover to avoid recomputing viewport on pointer move)
   const viewport = useMemo(() => {
     if (!project) return null;
     return computeGraphViewport({
       project,
+      graphIndex: graphIndex ?? undefined,
       mapFocusNodeId,
       selectedNodeId: selectedId,
       expandedNodeIds,
       relationshipMode,
-      hoveredNodeId,
     });
-  }, [project, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode, hoveredNodeId]);
+  }, [project, graphIndex, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode]);
 
   const layout = useMemo(() => viewport?.positions2D ?? new Map<string, Node2DPosition>(), [viewport]);
   const visibleNodes = useMemo(() => viewport?.visibleNodes ?? [], [viewport]);
@@ -158,10 +160,10 @@ export function ProjectGraph2D({
     return list;
   }, [viewport, project]);
 
-  // Hover and selection relationship sets for visual highlighting
+  // Hover and selection relationship sets for visual highlighting (fast O(1) adjacency lookup)
   const activeHighlightedIds = useMemo(() => {
     const targetId = hoveredNodeId ?? selectedId;
-    if (!targetId || !viewport || !project) return null;
+    if (!targetId || !viewport || !project || !graphIndex) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -173,21 +175,17 @@ export function ProjectGraph2D({
       if (item.parentId === targetId) set.add(item.id);
     }
 
-    if (node?.path && project.dependencies?.edges) {
-      for (const edge of project.dependencies.edges) {
-        if (edge.sourcePath === node.path && edge.targetResolvedPath) {
-          const tNode = project.nodes.find((n) => n.path === edge.targetResolvedPath);
-          if (tNode && viewport.visibleNodesMap.has(tNode.id)) set.add(tNode.id);
-        }
-        if (edge.targetResolvedPath === node.path) {
-          const sNode = project.nodes.find((n) => n.path === edge.sourcePath);
-          if (sNode && viewport.visibleNodesMap.has(sNode.id)) set.add(sNode.id);
-        }
-      }
+    const outgoing = graphIndex.dependenciesBySourceId.get(targetId) ?? [];
+    for (const item of outgoing) {
+      if (viewport.visibleNodesMap.has(item.targetId)) set.add(item.targetId);
+    }
+    const incoming = graphIndex.dependenciesByTargetId.get(targetId) ?? [];
+    for (const item of incoming) {
+      if (viewport.visibleNodesMap.has(item.sourceId)) set.add(item.sourceId);
     }
 
     return set;
-  }, [hoveredNodeId, selectedId, viewport, project]);
+  }, [hoveredNodeId, selectedId, viewport, project, graphIndex]);
 
   // Mouse pan handlers
   const handleMouseDown = useCallback(

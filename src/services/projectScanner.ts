@@ -39,9 +39,22 @@ export class ProgressScheduler {
   ) {}
 
   update(progress: ScanProgress) {
-    this.latestState = progress;
     if (this.isDone || !this.onProgress) return;
 
+    // On phase change, flush any pending state from the prior phase, then emit new phase immediately
+    if (this.latestState && this.latestState.phase !== progress.phase) {
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+        this.onProgress(this.latestState);
+      }
+      this.latestState = progress;
+      this.lastEmitTime = performance.now();
+      this.onProgress(progress);
+      return;
+    }
+
+    this.latestState = progress;
     const now = performance.now();
     const elapsed = now - this.lastEmitTime;
 
@@ -229,12 +242,12 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
       try {
         for await (const entry of entries) {
           ensureNotAborted(options.signal);
-          if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
-          if (shouldIgnoreEntry(entry.name, entry.kind, customExclusions)) continue;
-
           // Canonical project-relative path
           const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+          if (shouldIgnoreEntry(entry.name, entry.kind, path, customExclusions)) continue;
+
           discovered += 1;
+          if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
 
           if (entry.kind === 'directory') {
             const id = stableNodeId(projectId, path);
@@ -300,10 +313,26 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
       }
     }
 
-    // Phase 2: File Analysis (Determinate - totalToAnalyze is known)
-    const totalToAnalyze = fileWorkItems.length;
+    // Phase 2: File Analysis (Determinate - totalFilesToProcess is known)
+    const totalFilesToProcess = fileWorkItems.length;
+    let processedFiles = 0;
 
-    for (let i = 0; i < totalToAnalyze; i += 1) {
+    if (totalFilesToProcess === 0) {
+      scheduler.update({
+        phase: 'analyzing',
+        discovered,
+        totalFilesToProcess: 0,
+        totalToAnalyze: 0,
+        processedFiles: 0,
+        analyzed: 0,
+        reused: 0,
+        warnings: warnings.length,
+        currentPath: 'No files to process',
+        percentage: 100,
+      });
+    }
+
+    for (let i = 0; i < totalFilesToProcess; i += 1) {
       ensureNotAborted(options.signal);
       const { entry, path, parentId, depth } = fileWorkItems[i];
       const nodeId = stableNodeId(projectId, path);
@@ -390,36 +419,43 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         warnings.push({ path, message: error instanceof Error ? error.message : 'File could not be read.' });
+      } finally {
+        processedFiles += 1;
       }
 
       scheduler.update({
         phase: 'analyzing',
         discovered,
-        totalToAnalyze,
+        totalFilesToProcess,
+        totalToAnalyze: totalFilesToProcess,
+        processedFiles,
         analyzed,
         reused,
         warnings: warnings.length,
         currentPath: path,
-        percentage: Math.round(((analyzed + reused) / Math.max(1, totalToAnalyze)) * 100),
+        percentage: Math.min(100, Math.round((processedFiles / Math.max(1, totalFilesToProcess)) * 100)),
       });
 
       if (i % 32 === 0) await yieldToBrowser();
     }
 
-    // Flush any remaining files in batch
+    // Flush any remaining files in batch and flush progress to ensure 100% analyzing is emitted
     await flushPendingBatch();
+    scheduler.flush();
     ensureNotAborted(options.signal);
 
-    // Phase 3: Building Relationships
+    // Phase 3: Building Relationships (indeterminate progress - no fake percentages)
     scheduler.update({
       phase: 'building-relationships',
       discovered,
-      totalToAnalyze,
+      totalFilesToProcess,
+      totalToAnalyze: totalFilesToProcess,
+      processedFiles,
       analyzed,
       reused,
       warnings: warnings.length,
       currentPath: 'Resolving module dependency relationships…',
-      percentage: 100,
+      percentage: undefined,
     });
 
     const filesForResolution: Array<{ id: string; path: string; rawSpecifiers: RawSpecifier[] }> = [];
@@ -440,16 +476,18 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
       options.signal
     );
 
-    // Phase 4: Local Persistence / Finalizing
+    // Phase 4: Finalizing Metrics & Layout (indeterminate progress - no fake percentages)
     scheduler.update({
-      phase: 'saving',
+      phase: 'finalizing',
       discovered,
-      totalToAnalyze,
+      totalFilesToProcess,
+      totalToAnalyze: totalFilesToProcess,
+      processedFiles,
       analyzed,
       reused,
       warnings: warnings.length,
       currentPath: 'Finalizing local architectural index…',
-      percentage: 100,
+      percentage: undefined,
     });
 
     const outgoingCounts = new Map<string, number>();

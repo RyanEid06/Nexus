@@ -8,6 +8,7 @@ import {
   type LocalDirectoryHandle,
   type ScanProgress,
 } from '../services/projectScanner';
+import { normalizeExclusionPath } from '../services/ignoreRules';
 import { findProjectIdForHandle, loadPreferences, loadProject, saveProject } from '../storage/db';
 import { useAppStore } from '../store/useAppStore';
 
@@ -76,9 +77,8 @@ export function ImportProject({
   }
 
   function addCustomExclusion() {
-    const trimmed = customInput.trim();
-    if (!trimmed) return;
-    const normalized = trimmed.replace(/\/+$/, '');
+    const normalized = normalizeExclusionPath(customInput);
+    if (!normalized) return;
     if (!customExclusions.includes(normalized)) {
       setCustomExclusions([...customExclusions, normalized]);
     }
@@ -98,11 +98,15 @@ export function ImportProject({
       if (p.phase === 'discovering') {
         setLiveAnnouncement('Phase 1: Discovering project structure.');
       } else if (p.phase === 'analyzing') {
-        setLiveAnnouncement(`Phase 2: Analyzing ${p.totalToAnalyze ?? 0} files.`);
+        setLiveAnnouncement(`Phase 2: Analyzing ${p.totalFilesToProcess ?? p.totalToAnalyze ?? 0} files.`);
       } else if (p.phase === 'building-relationships') {
         setLiveAnnouncement('Phase 3: Building dependency relationships.');
+      } else if (p.phase === 'finalizing') {
+        setLiveAnnouncement('Phase 4: Finalizing architectural metrics.');
       } else if (p.phase === 'saving') {
-        setLiveAnnouncement('Phase 4: Finalizing and saving local index.');
+        setLiveAnnouncement('Phase 5: Saving local index.');
+      } else if (p.phase === 'complete') {
+        setLiveAnnouncement('Phase 6: Project analysis complete.');
       }
     }
   };
@@ -135,8 +139,36 @@ export function ImportProject({
         previousProject: existing,
       });
 
-      setLiveAnnouncement('Project analysis complete.');
+      // Saving local index only while actual persistence is running (Truthful Phase 5)
+      handleProgress({
+        phase: 'saving',
+        discovered: project.nodes.length,
+        totalFilesToProcess: project.metrics.files,
+        totalToAnalyze: project.metrics.files,
+        processedFiles: project.metrics.files,
+        analyzed: project.metrics.analyzedFiles,
+        reused: 0,
+        warnings: project.warnings.length,
+        currentPath: 'Saving local index…',
+        percentage: undefined,
+      });
+
       await saveProject(project, folder);
+
+      handleProgress({
+        phase: 'complete',
+        discovered: project.nodes.length,
+        totalFilesToProcess: project.metrics.files,
+        totalToAnalyze: project.metrics.files,
+        processedFiles: project.metrics.files,
+        analyzed: project.metrics.analyzedFiles,
+        reused: 0,
+        warnings: project.warnings.length,
+        currentPath: 'Project index saved.',
+        percentage: 100,
+      });
+
+      setLiveAnnouncement('Project analysis complete.');
       setProject(project);
       onClose();
     } catch (err) {
@@ -272,7 +304,7 @@ export function ImportProject({
               <div style={{ display: 'flex', gap: '6px' }}>
                 <input
                   type="text"
-                  placeholder="Exclude folder..."
+                  placeholder="e.g. fixtures or packages/legacy"
                   value={customInput}
                   onChange={(e) => setCustomInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -303,6 +335,9 @@ export function ImportProject({
                   <Plus size={12} />
                 </button>
               </div>
+              <small style={{ display: 'block', color: '#8E92A5', fontSize: '9px', marginTop: '4px' }}>
+                "fixtures" excludes folders named fixtures anywhere; "temp/data" excludes that project path.
+              </small>
 
               {customExclusions.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
@@ -362,7 +397,9 @@ export function ImportProject({
                       {progress.phase === 'discovering' && 'Discovering project…'}
                       {progress.phase === 'analyzing' && 'Analyzing files'}
                       {progress.phase === 'building-relationships' && 'Building relationships'}
+                      {progress.phase === 'finalizing' && 'Finalizing metrics'}
                       {progress.phase === 'saving' && 'Saving local index'}
+                      {progress.phase === 'complete' && 'Analysis complete'}
                     </span>
                     {progress.phase === 'analyzing' && progress.percentage !== undefined && (
                       <span className="tabular-nums">{progress.percentage}%</span>
@@ -375,14 +412,14 @@ export function ImportProject({
                     role="progressbar"
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-valuenow={progress.phase === 'analyzing' ? progress.percentage : undefined}
+                    aria-valuenow={progress.phase === 'analyzing' || progress.phase === 'complete' ? progress.percentage : undefined}
                     aria-label={
                       progress.phase === 'discovering'
                         ? 'Discovering project files'
                         : `Analyzing files: ${progress.percentage ?? 0}%`
                     }
                   >
-                    {progress.phase === 'discovering' || progress.phase === 'building-relationships' ? (
+                    {progress.phase === 'discovering' || progress.phase === 'building-relationships' || progress.phase === 'finalizing' || progress.phase === 'saving' ? (
                       <div className="progress-bar-indeterminate" />
                     ) : (
                       <div
@@ -399,7 +436,7 @@ export function ImportProject({
                     ) : (
                       <>
                         <span>
-                          {(progress.analyzed + progress.reused).toLocaleString()} / {(progress.totalToAnalyze ?? progress.discovered).toLocaleString()}
+                          {(progress.processedFiles ?? (progress.analyzed + progress.reused)).toLocaleString()} / {(progress.totalFilesToProcess ?? progress.totalToAnalyze ?? progress.discovered).toLocaleString()} processed{progress.percentage !== undefined ? ` · ${progress.percentage}%` : ''}
                         </span>
                         <span style={{ color: '#8E92A5', fontSize: '10px' }}>
                           {progress.analyzed} analyzed · {progress.reused} reused

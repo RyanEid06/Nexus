@@ -9,7 +9,7 @@
     "privacy": "local-first; source code is never uploaded by default",
     "v1_ai": false,
     "v1_multiplayer": false,
-    "design_reference": "docs/design/NEXUS_FINAL_UI_REFERENCE.png",
+    "design_reference": "approved-v1-desktop-spatial",
     "primary_visual_language": "obsidian + purple/indigo, restrained glow, professional developer tool"
   },
   "v1_core": [

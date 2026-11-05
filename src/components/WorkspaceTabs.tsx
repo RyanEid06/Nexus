@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, Search } from 'lucide-react';
-import type { AppPage } from '../domain/models';
+import { AlertTriangle, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { SCANNER_ANALYSIS_VERSION, type AppPage } from '../domain/models';
 import { useAppStore } from '../store/useAppStore';
 
 const tabs: Array<[AppPage, string]> = [
@@ -48,6 +48,11 @@ export function WorkspaceTabs() {
 
       <div className="breadcrumbs">
         NEXUS <span>›</span> {project.name}
+        {(project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION && (
+          <span className="outdated-index-pill" title="This project index was created with an older version of NEXUS.">
+            <AlertTriangle size={12} /> Viewing outdated cached index
+          </span>
+        )}
       </div>
 
       <div className="top-tabs">

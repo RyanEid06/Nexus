@@ -56,9 +56,19 @@ export function GraphPage() {
       if (isInput) return;
 
       if (e.key === 'Escape') {
-        if (useAppStore.getState().mapFocusNodeId !== 'root') {
-          e.preventDefault();
-          useAppStore.getState().navigateUpToParentFocus();
+        const state = useAppStore.getState();
+        if (state.project) {
+          const vp = computeGraphViewport({
+            project: state.project,
+            mapFocusNodeId: state.mapFocusNodeId,
+            selectedNodeId: state.selectedNodeId,
+            expandedNodeIds: state.expandedNodeIds,
+            relationshipMode: state.relationshipMode,
+          });
+          if (!vp.isProjectRootFocused) {
+            e.preventDefault();
+            state.navigateUpToParentFocus();
+          }
         }
       } else if (e.key === 'Enter') {
         const state = useAppStore.getState();
@@ -119,72 +129,77 @@ export function GraphPage() {
       <section className="workspace-main">
         <WorkspaceTabs />
         <div className="graph-stage" ref={stageRef}>
-          {/* Top Filter Bar for Relationships */}
-          <div className="map-filter-bar">
-            <span className="filter-label">Filter:</span>
-            <div className="filter-pill-group" role="tablist">
-              {(['hierarchy', 'dependencies', 'both'] as RelationshipFilterMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={`filter-btn ${relationshipMode === mode ? 'active' : ''}`}
-                  onClick={() => setRelationshipMode(mode)}
-                >
-                  {mode === 'hierarchy' ? 'Hierarchy' : mode === 'dependencies' ? 'Dependencies' : 'Both'}
-                </button>
-              ))}
+          {/* Top Map Header Controls with Zero Overlap */}
+          <div className="map-header-controls">
+            <div className="map-filter-row">
+              <div className="map-filter-bar">
+                <span className="filter-label">Filter:</span>
+                <div className="filter-pill-group" role="tablist">
+                  {(['hierarchy', 'dependencies', 'both'] as RelationshipFilterMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      className={`filter-btn ${relationshipMode === mode ? 'active' : ''}`}
+                      onClick={() => setRelationshipMode(mode)}
+                    >
+                      {mode === 'hierarchy' ? 'Hierarchy' : mode === 'dependencies' ? 'Dependencies' : 'Both'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {viewport && (
+                <div className="map-status-info">
+                  <span>
+                    {viewport.visibleNodes.length} nodes shown · {viewport.totalDirectChildren} direct children
+                    {viewport.hiddenDirectChildren > 0 && ` (${viewport.hiddenDirectChildren} hidden)`}
+                    {viewport.visibleDependenciesCount > 0 && ` · ${viewport.visibleDependenciesCount} deps`}
+                  </span>
+                </div>
+              )}
             </div>
+
+            {viewport && (
+              <div className="map-breadcrumbs-bar">
+                <div className="map-breadcrumbs-nav">
+                  {!viewport.isProjectRootFocused && (
+                    <button
+                      className="map-back-btn"
+                      onClick={() => navigateUpToParentFocus()}
+                      title="Go up to parent directory (Esc)"
+                      aria-label="Go up to parent directory"
+                    >
+                      <ArrowLeft size={13} />
+                      <span>Back</span>
+                    </button>
+                  )}
+                  <nav className="map-breadcrumbs-trail" aria-label="Directory breadcrumbs">
+                    {viewport.breadcrumbTrail.map((crumb, idx) => {
+                      const isLast = idx === viewport.breadcrumbTrail.length - 1;
+                      const displayName = crumb.kind === 'project' ? project?.name ?? 'Root' : crumb.name;
+                      return (
+                        <span key={crumb.id} className="map-breadcrumb-item">
+                          {idx > 0 && <span className="map-breadcrumb-sep">/</span>}
+                          {isLast ? (
+                            <span className="map-breadcrumb-current" aria-current="location">
+                              {displayName}
+                            </span>
+                          ) : (
+                            <button
+                              className="map-breadcrumb-btn"
+                              onClick={() => setMapFocusNodeId(crumb.id)}
+                              title={`Focus on ${displayName}`}
+                            >
+                              {displayName}
+                            </button>
+                          )}
+                        </span>
+                      );
+                    })}
+                  </nav>
+                </div>
+              </div>
+            )}
           </div>
-
-          {/* Breadcrumbs Navigation Bar */}
-          {viewport && (
-            <div className="map-breadcrumbs-bar">
-              <div className="map-breadcrumbs-nav">
-                {mapFocusNodeId !== 'root' && (
-                  <button
-                    className="map-back-btn"
-                    onClick={() => navigateUpToParentFocus()}
-                    title="Go up to parent directory (Esc)"
-                    aria-label="Go up to parent directory"
-                  >
-                    <ArrowLeft size={13} />
-                    <span>Back</span>
-                  </button>
-                )}
-                <nav className="map-breadcrumbs-trail" aria-label="Directory breadcrumbs">
-                  {viewport.breadcrumbTrail.map((crumb, idx) => {
-                    const isLast = idx === viewport.breadcrumbTrail.length - 1;
-                    const displayName = crumb.kind === 'project' ? project?.name ?? 'Root' : crumb.name;
-                    return (
-                      <span key={crumb.id} className="map-breadcrumb-item">
-                        {idx > 0 && <span className="map-breadcrumb-sep">/</span>}
-                        {isLast ? (
-                          <span className="map-breadcrumb-current" aria-current="location">
-                            {displayName}
-                          </span>
-                        ) : (
-                          <button
-                            className="map-breadcrumb-btn"
-                            onClick={() => setMapFocusNodeId(crumb.id)}
-                            title={`Focus on ${displayName}`}
-                          >
-                            {displayName}
-                          </button>
-                        )}
-                      </span>
-                    );
-                  })}
-                </nav>
-              </div>
-
-              <div className="map-status-info">
-                <span>
-                  {viewport.visibleNodes.length} nodes shown · {viewport.totalDirectChildren} direct children
-                  {viewport.hiddenDirectChildren > 0 && ` (${viewport.hiddenDirectChildren} hidden)`}
-                  {viewport.visibleDependenciesCount > 0 && ` · ${viewport.visibleDependenciesCount} deps`}
-                </span>
-              </div>
-            </div>
-          )}
 
           {/* Canvas Layers with isolated rendering and pointer events */}
           <div

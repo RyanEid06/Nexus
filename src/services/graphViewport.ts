@@ -41,14 +41,14 @@ export interface GraphViewportModel {
   breadcrumbTrail: ProjectNode[];
   isProjectRootFocused: boolean;
 
-  // Real visible nodes (bounded by budget)
+  // Real visible nodes (strictly bounded by budget <= 72)
   visibleNodes: ProjectNode[];
   visibleNodesMap: Map<string, ProjectNode>;
 
   // Overflow aggregates (navigation affordances)
   overflowNodes: ViewportOverflowNode[];
 
-  // Deterministic 2D & 3D coordinates
+  // Guaranteed deterministic 2D & 3D coordinates for EVERY visible node
   positions2D: Map<string, Node2DPosition>;
   positions3D: Map<string, [number, number, number]>;
 
@@ -68,7 +68,92 @@ export interface GraphViewportModel {
 }
 
 /**
- * Deterministically sorts direct child nodes:
+ * Pre-indexed graph structure memoized per project identity.
+ * Precomputes lookups for fast O(1) access so pointer hovers
+ * never perform full-project iterations over 50,000+ nodes.
+ */
+export interface ProjectGraphIndex {
+  project: ProjectIndex;
+  byId: Map<string, ProjectNode>;
+  byParent: Map<string | null, ProjectNode[]>;
+  pathToId: Map<string, string>;
+  rootNode: ProjectNode;
+  dependenciesBySourceId: Map<string, Array<{ edge: DependencyEdge; targetId: string }>>;
+  dependenciesByTargetId: Map<string, Array<{ edge: DependencyEdge; sourceId: string }>>;
+}
+
+const graphIndexCache = new WeakMap<ProjectIndex, ProjectGraphIndex>();
+
+export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
+  const cached = graphIndexCache.get(project);
+  if (cached) return cached;
+
+  const byId = new Map<string, ProjectNode>();
+  const byParent = new Map<string | null, ProjectNode[]>();
+  const pathToId = new Map<string, string>();
+
+  let rootNode: ProjectNode | undefined;
+
+  for (const node of project.nodes) {
+    byId.set(node.id, node);
+    pathToId.set(node.path, node.id);
+
+    if (node.kind === 'project' && !rootNode) {
+      rootNode = node;
+    }
+
+    const list = byParent.get(node.parentId) ?? [];
+    list.push(node);
+    byParent.set(node.parentId, list);
+  }
+
+  if (!rootNode) {
+    rootNode = project.nodes[0];
+  }
+
+  const dependenciesBySourceId = new Map<string, Array<{ edge: DependencyEdge; targetId: string }>>();
+  const dependenciesByTargetId = new Map<string, Array<{ edge: DependencyEdge; sourceId: string }>>();
+
+  if (project.dependencies?.edges) {
+    for (const edge of project.dependencies.edges) {
+      if (!edge.isExternal && edge.isResolved) {
+        const sId = pathToId.get(edge.sourcePath);
+        const tId = pathToId.get(edge.targetResolvedPath ?? edge.targetPath);
+        if (sId && tId && sId !== tId) {
+          let outList = dependenciesBySourceId.get(sId);
+          if (!outList) {
+            outList = [];
+            dependenciesBySourceId.set(sId, outList);
+          }
+          outList.push({ edge, targetId: tId });
+
+          let inList = dependenciesByTargetId.get(tId);
+          if (!inList) {
+            inList = [];
+            dependenciesByTargetId.set(tId, inList);
+          }
+          inList.push({ edge, sourceId: sId });
+        }
+      }
+    }
+  }
+
+  const index: ProjectGraphIndex = {
+    project,
+    byId,
+    byParent,
+    pathToId,
+    rootNode,
+    dependenciesBySourceId,
+    dependenciesByTargetId,
+  };
+
+  graphIndexCache.set(project, index);
+  return index;
+}
+
+/**
+ * Deterministically sorts child nodes:
  * 1. Directories before files
  * 2. Descendant/subtree file count (larger architecture first)
  * 3. File LOC/size
@@ -99,88 +184,120 @@ export function prioritizeChildren(children: ProjectNode[]): ProjectNode[] {
   });
 }
 
-/**
- * Builds the unified visibility model consumed identically by both 2D and 3D maps.
- */
-export function computeGraphViewport({
-  project,
-  mapFocusNodeId,
-  selectedNodeId,
-  expandedNodeIds,
-  relationshipMode = 'hierarchy',
-  hoveredNodeId = null,
-}: {
+export interface ComputeViewportOptions {
   project: ProjectIndex;
+  graphIndex?: ProjectGraphIndex;
   mapFocusNodeId: string | null;
   selectedNodeId: string | null;
   expandedNodeIds: ReadonlySet<string>;
   relationshipMode?: RelationshipFilterMode;
   hoveredNodeId?: string | null;
-}): GraphViewportModel {
-  const byId = new Map(project.nodes.map((n) => [n.id, n]));
-  const byParent = new Map<string | null, ProjectNode[]>();
+}
 
-  for (const node of project.nodes) {
-    const list = byParent.get(node.parentId) ?? [];
-    list.push(node);
-    byParent.set(node.parentId, list);
-  }
+/**
+ * Builds the unified visibility model consumed identically by both 2D and 3D maps.
+ * Enforces a strict maximum of MAX_GRAPH_REAL_NODES (72).
+ * Mandatory nodes (focus node and required selected path) are reserved FIRST.
+ */
+export function computeGraphViewport({
+  project,
+  graphIndex,
+  mapFocusNodeId,
+  selectedNodeId,
+  expandedNodeIds,
+  relationshipMode = 'hierarchy',
+  hoveredNodeId = null,
+}: ComputeViewportOptions): GraphViewportModel {
+  const index = graphIndex ?? buildGraphIndex(project);
+  const { byId, byParent, rootNode } = index;
 
   // 1. Resolve Focus Node & Breadcrumb Trail
-  const rootNode = project.nodes.find((n) => n.kind === 'project') ?? project.nodes[0];
-  const focusNode = (mapFocusNodeId ? byId.get(mapFocusNodeId) : null) ?? rootNode;
+  let focusNode = (mapFocusNodeId ? byId.get(mapFocusNodeId) : null) ?? rootNode;
+
+  // Check if selectedNodeId is a descendant of focusNode
+  const selNode = selectedNodeId ? byId.get(selectedNodeId) : null;
+  let isDescendantOfFocus = false;
+  const fullPathDown: ProjectNode[] = [];
+
+  if (selNode && selNode.id !== focusNode.id) {
+    let curr: ProjectNode | undefined = selNode;
+    const chain: ProjectNode[] = [];
+    while (curr) {
+      if (curr.id === focusNode.id) {
+        isDescendantOfFocus = true;
+        break;
+      }
+      chain.unshift(curr);
+      curr = curr.parentId ? byId.get(curr.parentId) : undefined;
+    }
+    if (isDescendantOfFocus) {
+      fullPathDown.push(...chain);
+    }
+  }
+
+  // If selected path is longer than total available capacity (71 nodes below focus),
+  // drill effective focus down toward selected node so the remaining chain fits strictly within budget.
+  if (isDescendantOfFocus && fullPathDown.length > MAX_GRAPH_REAL_NODES - 1) {
+    const shiftCount = fullPathDown.length - (MAX_GRAPH_REAL_NODES - 1);
+    focusNode = fullPathDown[shiftCount - 1];
+    fullPathDown.splice(0, shiftCount);
+  }
+
   const isProjectRootFocused = focusNode.id === rootNode.id;
 
   // Build breadcrumb trail from root down to focusNode
   const breadcrumbTrail: ProjectNode[] = [];
-  let curr: ProjectNode | undefined = focusNode;
-  while (curr) {
-    breadcrumbTrail.unshift(curr);
-    curr = curr.parentId ? byId.get(curr.parentId) : undefined;
+  let bCurr: ProjectNode | undefined = focusNode;
+  while (bCurr) {
+    breadcrumbTrail.unshift(bCurr);
+    bCurr = bCurr.parentId ? byId.get(bCurr.parentId) : undefined;
   }
 
   const focusParentNode = focusNode.parentId ? byId.get(focusNode.parentId) ?? null : null;
 
-  // 2. Direct Children of Focus Node
+  // 2. Strict Budget Allocation Model
+  // Mandatory Step 1: Reserve Focus Node (1 slot)
+  let budgetRemaining = MAX_GRAPH_REAL_NODES - 1;
+
+  // Mandatory Step 2: Reserve Selected Path Nodes
+  const selectedPathNodes: ProjectNode[] = isDescendantOfFocus ? fullPathDown : [];
+  budgetRemaining -= selectedPathNodes.length;
+
+  const directPathChild = selectedPathNodes.length > 0 ? selectedPathNodes[0] : null;
+
+  // Step 3: Direct Children of Focus Node
   const rawDirectChildren = byParent.get(focusNode.id) ?? [];
   const totalDirectChildren = rawDirectChildren.length;
   const sortedDirectChildren = prioritizeChildren(rawDirectChildren);
 
-  // Selected node protection: if selectedNode is a direct child, it MUST be included
-  let visibleDirectChildrenList: ProjectNode[] = [];
-  let hiddenDirectChildrenList: ProjectNode[] = [];
+  const visibleDirectChildrenList: ProjectNode[] = [];
+  const hiddenDirectChildrenList: ProjectNode[] = [];
 
-  if (totalDirectChildren <= MAX_DIRECT_REAL_CHILDREN) {
-    visibleDirectChildrenList = sortedDirectChildren;
-  } else {
-    // Budget direct children
-    const budget = MAX_DIRECT_REAL_CHILDREN;
-    const initialCut = sortedDirectChildren.slice(0, budget);
-    const remainder = sortedDirectChildren.slice(budget);
-
-    // If selectedNodeId is among direct children but was sliced into remainder, swap it in
-    if (selectedNodeId && remainder.some((n) => n.id === selectedNodeId)) {
-      const selectedChild = remainder.find((n) => n.id === selectedNodeId)!;
-      // Replace the last item with selectedChild
-      const last = initialCut.pop()!;
-      initialCut.push(selectedChild);
-      remainder.splice(remainder.indexOf(selectedChild), 1);
-      remainder.push(last);
-    }
-
-    visibleDirectChildrenList = initialCut;
-    hiddenDirectChildrenList = remainder;
+  if (directPathChild) {
+    visibleDirectChildrenList.push(directPathChild);
   }
 
-  const hiddenDirectChildren = hiddenDirectChildrenList.length;
+  // Allocate remaining capacity to direct children (up to MAX_DIRECT_REAL_CHILDREN)
+  const maxOtherDirectSlots = Math.max(
+    0,
+    Math.min(MAX_DIRECT_REAL_CHILDREN - (directPathChild ? 1 : 0), budgetRemaining)
+  );
 
-  // 3. Expanded Child Branches
-  // Only children of expanded visible directories may appear, up to MAX_EXPANDED_BRANCH_CHILDREN each
+  for (const child of sortedDirectChildren) {
+    if (directPathChild && child.id === directPathChild.id) continue;
+    if (visibleDirectChildrenList.length < (directPathChild ? maxOtherDirectSlots + 1 : maxOtherDirectSlots)) {
+      visibleDirectChildrenList.push(child);
+      budgetRemaining -= 1;
+    } else {
+      hiddenDirectChildrenList.push(child);
+    }
+  }
+
+  const hiddenDirectChildren = totalDirectChildren - visibleDirectChildrenList.length;
+
+  // Step 4: Expanded Child Branches
   const visibleBranchChildren: ProjectNode[] = [];
   const branchOverflowMap = new Map<string, { hiddenCount: number; totalCount: number }>();
-
-  // Global budget tracker: start with focusNode + direct children
-  let currentBudgetRemaining = MAX_GRAPH_REAL_NODES - (1 + visibleDirectChildrenList.length);
 
   for (const child of visibleDirectChildrenList) {
     if (child.kind === 'directory' && expandedNodeIds.has(child.id)) {
@@ -188,69 +305,57 @@ export function computeGraphViewport({
       const totalBranch = rawBranchChildren.length;
       if (totalBranch === 0) continue;
 
-      const sortedBranch = prioritizeChildren(rawBranchChildren);
-      const branchCap = Math.min(MAX_EXPANDED_BRANCH_CHILDREN, Math.max(0, currentBudgetRemaining));
+      // Check if any selectedPathNode is a direct child of this directory
+      const pathBranchChild = selectedPathNodes.find((p) => p.parentId === child.id);
 
-      let branchShown: ProjectNode[] = [];
-      if (totalBranch <= branchCap) {
-        branchShown = sortedBranch;
-      } else {
-        branchShown = sortedBranch.slice(0, branchCap);
+      const maxBranchSlots = Math.max(
+        0,
+        Math.min(MAX_EXPANDED_BRANCH_CHILDREN - (pathBranchChild ? 1 : 0), budgetRemaining)
+      );
+
+      const branchShown: ProjectNode[] = [];
+      if (pathBranchChild) {
+        branchShown.push(pathBranchChild);
+      }
+
+      const sortedBranch = prioritizeChildren(rawBranchChildren);
+      for (const b of sortedBranch) {
+        if (pathBranchChild && b.id === pathBranchChild.id) continue;
+        if (branchShown.length < (pathBranchChild ? maxBranchSlots + 1 : maxBranchSlots)) {
+          branchShown.push(b);
+          budgetRemaining -= 1;
+        }
+      }
+
+      if (totalBranch > branchShown.length) {
         branchOverflowMap.set(child.id, {
-          hiddenCount: totalBranch - branchCap,
+          hiddenCount: totalBranch - branchShown.length,
           totalCount: totalBranch,
         });
       }
 
-      // If selectedNode is inside this branch, make sure it is retained
-      if (selectedNodeId && rawBranchChildren.some((n) => n.id === selectedNodeId)) {
-        if (!branchShown.some((n) => n.id === selectedNodeId) && branchShown.length > 0) {
-          const selNode = rawBranchChildren.find((n) => n.id === selectedNodeId)!;
-          branchShown[branchShown.length - 1] = selNode;
-        }
-      }
-
       visibleBranchChildren.push(...branchShown);
-      currentBudgetRemaining -= branchShown.length;
     }
   }
 
-  // 4. Assemble Visible Real Nodes Set
+  // Step 5: Assemble Visible Real Nodes
   const visibleNodesSet = new Set<ProjectNode>();
   visibleNodesSet.add(focusNode);
   for (const node of visibleDirectChildrenList) visibleNodesSet.add(node);
   for (const node of visibleBranchChildren) visibleNodesSet.add(node);
-
-  // Requirement: Selected node must never be removed if it is anywhere within the focus tree
-  if (selectedNodeId && byId.has(selectedNodeId)) {
-    const sel = byId.get(selectedNodeId)!;
-    // Check if sel is a descendant of focusNode
-    let ancestor: ProjectNode | undefined = sel;
-    let isUnderFocus = false;
-    while (ancestor) {
-      if (ancestor.id === focusNode.id) {
-        isUnderFocus = true;
-        break;
-      }
-      ancestor = ancestor.parentId ? byId.get(ancestor.parentId) : undefined;
-    }
-    if (isUnderFocus) {
-      // Include sel and all ancestors up to focusNode
-      let chainNode: ProjectNode | undefined = sel;
-      while (chainNode && chainNode.id !== focusNode.id) {
-        visibleNodesSet.add(chainNode);
-        chainNode = chainNode.parentId ? byId.get(chainNode.parentId) : undefined;
-      }
-    }
-  }
+  for (const node of selectedPathNodes) visibleNodesSet.add(node);
 
   const visibleNodes = Array.from(visibleNodesSet);
+  // Strict guarantee: visibleNodes.length <= MAX_GRAPH_REAL_NODES
+  if (visibleNodes.length > MAX_GRAPH_REAL_NODES) {
+    visibleNodes.splice(MAX_GRAPH_REAL_NODES);
+  }
   const visibleNodesMap = new Map(visibleNodes.map((n) => [n.id, n]));
 
-  // 5. Overflow Aggregates
+  // Step 6: Overflow Aggregates
   const overflowNodes: ViewportOverflowNode[] = [];
 
-  // Focus direct children overflow: split into folders and files count for truthful messaging
+  // Focus direct children overflow indicator
   if (hiddenDirectChildren > 0) {
     const hiddenDirs = hiddenDirectChildrenList.filter((n) => n.kind === 'directory').length;
     const hiddenFiles = hiddenDirectChildrenList.filter((n) => n.kind === 'file').length;
@@ -272,8 +377,8 @@ export function computeGraphViewport({
       hiddenCount: hiddenDirectChildren,
       totalChildrenCount: totalDirectChildren,
       label,
-      position2D: { x: 0, y: 0, angle: 0 }, // Assigned in coordinate pass
-      position3D: [0, 0, 0], // Assigned in coordinate pass
+      position2D: { x: 0, y: 0, angle: 0 },
+      position3D: [0, 0, 0],
     });
   }
 
@@ -292,7 +397,7 @@ export function computeGraphViewport({
     });
   }
 
-  // 6. Deterministic 2D & 3D Coordinates
+  // Step 7: Deterministic 2D & 3D Coordinates (Every single visible node is guaranteed valid coordinates)
   const positions2D = new Map<string, Node2DPosition>();
   const positions3D = new Map<string, [number, number, number]>();
 
@@ -306,8 +411,6 @@ export function computeGraphViewport({
   const circumferenceNeeded = directCount * minArcSpacing;
   const radiusFromCount = circumferenceNeeded / (2 * Math.PI);
   const base2DRadius = Math.max(directCount <= 6 ? 260 : directCount <= 12 ? 310 : 360, radiusFromCount);
-
-  // 3D base radius
   const base3DRadius = Math.max(3.2, 2.6 * Math.sqrt(Math.max(1, directCount) * 0.18) + 2.2);
 
   visibleDirectChildrenList.forEach((child, i) => {
@@ -316,7 +419,6 @@ export function computeGraphViewport({
     const y2D = Math.sin(angle) * base2DRadius;
     positions2D.set(child.id, { x: x2D, y: y2D, angle });
 
-    // 3D Golden-angle staircase around central focus
     const angle3D = i * GOLDEN_ANGLE;
     const lift3D = -(0.55 + i * 0.08);
     const x3D = Math.cos(angle3D) * base3DRadius;
@@ -343,7 +445,6 @@ export function computeGraphViewport({
           const by2D = y2D + Math.sin(bAngle) * branch2DRadius;
           positions2D.set(bChild.id, { x: bx2D, y: by2D, angle: bAngle });
 
-          // 3D local spiral around parent
           const bAngle3D = angle3D + bIdx * 0.55;
           const bLift3D = lift3D - 0.45 - bIdx * 0.06;
           const bx3D = x3D + Math.cos(bAngle3D) * 2.2;
@@ -396,7 +497,48 @@ export function computeGraphViewport({
     positions3D.set(directOverflow.id, directOverflow.position3D);
   }
 
-  // 7. Hierarchy Edges
+  // Selected Path Placement Guarantee:
+  // Any visible node along the selected path that was not positioned by direct children or expanded branches
+  // is placed deterministically extending outward along the ancestor ray.
+  for (let idx = 0; idx < selectedPathNodes.length; idx += 1) {
+    const pNode = selectedPathNodes[idx];
+    if (!positions2D.has(pNode.id)) {
+      const parentId = pNode.parentId ?? focusNode.id;
+      const parentPos2D = positions2D.get(parentId) ?? { x: 0, y: 0, angle: 0 };
+      const parentPos3D = positions3D.get(parentId) ?? [0, 0, 0];
+
+      const pAngle = Math.atan2(parentPos2D.y, parentPos2D.x) || (Math.PI / 4 + idx * 0.2);
+      const step2D = 140;
+      const x2D = parentPos2D.x + Math.cos(pAngle) * step2D;
+      const y2D = parentPos2D.y + Math.sin(pAngle) * step2D;
+      positions2D.set(pNode.id, { x: x2D, y: y2D, angle: pAngle });
+
+      const dist3D = Math.hypot(parentPos3D[0], parentPos3D[2]) || 2.0;
+      const normX = parentPos3D[0] / dist3D || Math.cos(pAngle);
+      const normZ = parentPos3D[2] / dist3D || Math.sin(pAngle);
+      const x3D = parentPos3D[0] + normX * 1.8;
+      const y3D = parentPos3D[1] - 0.45;
+      const z3D = parentPos3D[2] + normZ * 1.8;
+      positions3D.set(pNode.id, [x3D, y3D, z3D]);
+    }
+  }
+
+  // Final Invariant Check: Every single visible node MUST have a 2D and 3D coordinate.
+  // Never fall back to [0,0,0] for non-focus nodes.
+  for (let idx = 0; idx < visibleNodes.length; idx += 1) {
+    const vNode = visibleNodes[idx];
+    if (!positions2D.has(vNode.id)) {
+      const fallbackAngle = (idx * GOLDEN_ANGLE) % (2 * Math.PI);
+      const fallback2D = { x: Math.cos(fallbackAngle) * 320, y: Math.sin(fallbackAngle) * 320, angle: fallbackAngle };
+      positions2D.set(vNode.id, fallback2D);
+    }
+    if (!positions3D.has(vNode.id)) {
+      const fallbackAngle = (idx * GOLDEN_ANGLE);
+      positions3D.set(vNode.id, [Math.cos(fallbackAngle) * 4.0, -1.0 - idx * 0.05, Math.sin(fallbackAngle) * 4.0]);
+    }
+  }
+
+  // Step 8: Hierarchy Edges
   const hierarchyEdges: ViewportHierarchyEdge[] = [];
   for (const node of visibleNodes) {
     if (node.parentId && visibleNodesMap.has(node.parentId)) {
@@ -419,29 +561,23 @@ export function computeGraphViewport({
     }
   }
 
-  // 8. Adaptive Dependency Edges
+  // Step 9: Adaptive Dependency Edges using Pre-indexed Dependency Adjacency
+  // Iterates ONLY over the <= 72 visible nodes rather than all project-wide edges.
   const visibleDependencyEdges: ViewportDependencyEdge[] = [];
   let totalDependenciesInScope = 0;
   let dependencyDensityCapped = false;
 
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
-  if (showDependencies && project.dependencies?.edges) {
-    const pathToId = new Map<string, string>();
-    for (const n of project.nodes) {
-      pathToId.set(n.path, n.id);
-    }
-
+  if (showDependencies) {
     const inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
 
-    for (const edge of project.dependencies.edges) {
-      if (!edge.isExternal && edge.isResolved) {
-        const sId = pathToId.get(edge.sourcePath);
-        const tId = pathToId.get(edge.targetResolvedPath ?? edge.targetPath);
-        if (sId && tId && sId !== tId) {
-          // Check if both endpoints are in visibleNodes
-          if (visibleNodesMap.has(sId) && visibleNodesMap.has(tId)) {
-            inScopeEdges.push({ edge, sId, tId });
+    for (const vNode of visibleNodes) {
+      const outgoing = index.dependenciesBySourceId.get(vNode.id);
+      if (outgoing) {
+        for (const item of outgoing) {
+          if (visibleNodesMap.has(item.targetId)) {
+            inScopeEdges.push({ edge: item.edge, sId: vNode.id, tId: item.targetId });
           }
         }
       }
@@ -451,7 +587,6 @@ export function computeGraphViewport({
 
     if (totalDependenciesInScope > MAX_VISIBLE_DEPENDENCY_EDGES) {
       dependencyDensityCapped = true;
-      // High-density filter (Section 13): Prioritize dependencies touching selectedNodeId, hoveredNodeId, or focusNode
       const priorityIds = new Set<string>();
       if (selectedNodeId) priorityIds.add(selectedNodeId);
       if (hoveredNodeId) priorityIds.add(hoveredNodeId);

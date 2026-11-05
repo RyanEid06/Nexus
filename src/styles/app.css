@@ -847,18 +847,15 @@
 
 /* Map Filter Bar */
 .map-filter-bar {
-  position: absolute;
-  top: 16px;
-  left: 20px;
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(14, 15, 23, 0.85);
+  background: rgba(14, 15, 23, 0.88);
   backdrop-filter: blur(12px);
   border: 1px solid #282A3D;
   border-radius: 8px;
   padding: 4px 8px;
-  z-index: 10;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 .filter-label {
   font-size: 11px;
@@ -1722,10 +1719,27 @@
    Map Focus, Breadcrumbs & Context Affordances (Release Invariants #4, #5, #16)
    ========================================================================== */
 
-.map-breadcrumbs-bar {
+.map-header-controls {
   position: absolute;
   top: 14px;
   left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 20;
+  max-width: calc(100% - 340px);
+  pointer-events: none;
+}
+
+.map-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+  flex-wrap: wrap;
+}
+
+.map-breadcrumbs-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1734,8 +1748,16 @@
   border-radius: 8px;
   padding: 5px 12px;
   backdrop-filter: blur(12px);
-  z-index: 20;
-  max-width: calc(100% - 320px);
+  pointer-events: auto;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  max-width: 100%;
+}
+.map-breadcrumbs-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  max-width: 100%;
 }
 .map-back-btn {
   display: inline-flex;
@@ -1749,6 +1771,8 @@
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.15s ease;
 }
 .map-back-btn:hover {
@@ -1756,12 +1780,19 @@
   color: white;
   border-color: #8B5CF6;
 }
-.map-breadcrumb-list {
+.map-breadcrumbs-trail {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   font-size: 11px;
   overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+.map-breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   white-space: nowrap;
 }
 .map-breadcrumb-btn {
@@ -1772,14 +1803,18 @@
   border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
+  transition: all 0.15s ease;
 }
 .map-breadcrumb-btn:hover {
   color: white;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.08);
 }
-.map-breadcrumb-btn.current {
+.map-breadcrumb-current {
   color: #EDE9FE;
   font-weight: 600;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 4px;
   background: rgba(139, 92, 246, 0.2);
 }
 .map-breadcrumb-sep {
@@ -1792,9 +1827,11 @@
   gap: 6px;
   font-size: 11px;
   color: #9CA3AF;
-  margin-left: 10px;
-  padding-left: 10px;
-  border-left: 1px solid #2A2C3D;
+  background: rgba(12, 13, 20, 0.88);
+  border: 1px solid #282A3D;
+  border-radius: 7px;
+  padding: 4px 10px;
+  backdrop-filter: blur(12px);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1815,8 +1852,10 @@
   margin-top: -70px;
   border-radius: 999px;
   background: radial-gradient(circle, #1F1538 0%, #131322 65%, #0B0A14 100%);
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   z-index: 10;
@@ -1824,6 +1863,24 @@
 .node-2d-focused-dir:hover,
 .node-2d-focused-dir.selected {
   transform: scale(1.06);
+}
+.focused-dir-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #EDE9FE;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+.focused-dir-sub {
+  font-size: 9px;
+  font-weight: 600;
+  color: #A78BFA;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-top: 2px;
 }
 
 /* ==========================================================================
@@ -1839,22 +1896,31 @@
   align-items: center;
   margin-bottom: 12px;
 }
-.inspector-collapse-btn {
+.inspector-collapse-btn,
+.inspector-toggle-btn {
   background: #171826;
   border: 1px solid #282A3D;
   color: #A78BFA;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   display: grid;
   place-items: center;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.inspector-collapse-btn:hover {
+.inspector-collapse-btn:hover,
+.inspector-toggle-btn:hover {
   background: #251E3E;
   color: white;
   border-color: #8B5CF6;
+}
+.inspector-collapse-btn:focus-visible,
+.inspector-toggle-btn:focus-visible {
+  outline: 2px solid #8B5CF6;
+  outline-offset: 2px;
 }
 .inspector-collapsed-ribbon {
   border-left: 1px solid var(--border);
@@ -1974,6 +2040,133 @@
   background: rgba(245, 158, 11, 0.08);
   color: #FBBF24;
 }
+
+/* ==========================================================================
+   Audited Component Styles (Items 11, 13)
+   ========================================================================== */
+
+/* WebGL Context Loss Fallback Card */
+.webgl-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, #131422 0%, #0B0B12 100%);
+  color: #EDE9FE;
+  padding: 32px;
+  text-align: center;
+  z-index: 10;
+}
+.webgl-fallback .icon-warning {
+  color: #F59E0B;
+  margin-bottom: 16px;
+}
+.webgl-fallback h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: white;
+}
+.webgl-fallback p {
+  font-size: 13px;
+  color: #9CA3AF;
+  max-width: 440px;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+.fallback-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Status Badges on Project Cards */
+.status-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Universal Truncate */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Shortest Path Finder Results in Dependencies Page */
+.path-result {
+  background: #12131F;
+  border: 1px solid #282A3D;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 14px;
+}
+.step-connector {
+  width: 2px;
+  height: 18px;
+  background: #3B3F58;
+  margin-left: 14px;
+  border-radius: 1px;
+}
+
+/* Outdated Cached Index Indicators */
+.outdated-index-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #F59E0B;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-weight: 500;
+}
+.card-badge.outdated {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+  color: #FBBF24;
+}
+.stale-prompt-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 11, 18, 0.95);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  z-index: 5;
+}
+.stale-prompt-overlay p {
+  font-size: 12px;
+  color: white;
+  margin: 0;
+  line-height: 1.4;
+}
+.stale-prompt-overlay small {
+  font-size: 10px;
+  color: #9CA3AF;
+}
+.stale-prompt-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.stale-prompt-actions button {
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
 
 
 

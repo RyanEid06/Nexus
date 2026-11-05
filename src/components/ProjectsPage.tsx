@@ -35,6 +35,7 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [statuses, setStatuses] = useState<Record<string, HandleConnectionStatus>>({});
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [stalePromptId, setStalePromptId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
   const setProject = useAppStore((s) => s.setProject);
@@ -64,11 +65,23 @@ export function ProjectsPage() {
     void refreshList();
   }, [refreshList]);
 
-  async function openProject(id: string) {
+  async function openProject(id: string, forceCached = false) {
     try {
       setLoadError('');
       const project = await loadProject(id);
-      if (project) setProject(project);
+      if (!project) return;
+
+      const isStale = (project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION;
+      const status = statuses[id] ?? 'unavailable';
+
+      if (isStale && !forceCached) {
+        if (status === 'connected' || status === 'permission-required') {
+          setStalePromptId(id);
+          return;
+        }
+      }
+
+      setProject(project);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Failed to open project.');
     }
@@ -229,6 +242,8 @@ export function ProjectsPage() {
           const status = statuses[project.id] ?? 'unavailable';
           const isRefreshing = refreshingId === project.id;
           const isPendingDelete = deleteConfirmId === project.id;
+          const isStale = (project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION;
+          const isPendingStale = stalePromptId === project.id;
 
           return (
             <article className="project-card" key={project.id}>
@@ -242,22 +257,32 @@ export function ProjectsPage() {
                     <Box />
                   </span>
                   <div className="status-badges">
-                    {(project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION && (
+                    {isStale && status === 'connected' && (
                       <span className="card-badge index-needs-refresh" title="Project was indexed with an older analysis version; refresh recommended">
                         <RefreshCw size={10} /> Index needs refresh
                       </span>
                     )}
-                    {status === 'connected' && (
+                    {isStale && status === 'permission-required' && (
+                      <span className="card-badge index-needs-refresh" title="Permission required to refresh outdated index">
+                        <RefreshCw size={10} /> Index needs refresh — reconnect to update
+                      </span>
+                    )}
+                    {isStale && status === 'unavailable' && (
+                      <span className="card-badge outdated" title="Viewing outdated cached index">
+                        <AlertTriangle size={10} /> Viewing outdated cached index
+                      </span>
+                    )}
+                    {!isStale && status === 'connected' && (
                       <span className="card-badge connected" title="Direct folder access active">
                         <CheckCircle2 size={10} /> Connected
                       </span>
                     )}
-                    {status === 'permission-required' && (
+                    {!isStale && status === 'permission-required' && (
                       <span className="card-badge permission" title="Permission required to rescan">
                         <AlertTriangle size={10} /> Reconnect needed
                       </span>
                     )}
-                    {status === 'unavailable' && (
+                    {!isStale && status === 'unavailable' && (
                       <span className="card-badge unavailable" title="Folder handle disconnected or unavailable">
                         <Unplug size={10} /> Disconnected
                       </span>
@@ -277,13 +302,13 @@ export function ProjectsPage() {
                 <div className="project-actions">
                   {status === 'connected' && (
                     <button
-                      className="action-btn"
+                      className={`action-btn ${isStale ? 'highlight' : ''}`}
                       onClick={(e) => void handleRefreshOrReconnect(project.id, e)}
                       disabled={isRefreshing}
                       title="Run incremental refresh for new, modified, or deleted files"
                     >
                       <RefreshCw size={11} className={isRefreshing ? 'spin' : ''} />
-                      {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                      {isRefreshing ? 'Refreshing...' : isStale ? 'Refresh Index' : 'Refresh'}
                     </button>
                   )}
                   {status === 'permission-required' && (
@@ -294,7 +319,7 @@ export function ProjectsPage() {
                       title="Request browser permission to rescan folder"
                     >
                       <RefreshCw size={11} className={isRefreshing ? 'spin' : ''} />
-                      {isRefreshing ? 'Prompting...' : 'Reconnect'}
+                      {isRefreshing ? 'Prompting...' : isStale ? 'Reconnect to update' : 'Reconnect'}
                     </button>
                   )}
                   {status === 'unavailable' && browserSupported && (
@@ -322,6 +347,52 @@ export function ProjectsPage() {
                   <Trash2 size={13} />
                 </button>
               </div>
+
+              {isPendingStale && (
+                <div className="stale-prompt-overlay" onClick={(e) => e.stopPropagation()}>
+                  <p><b>Index Needs Refresh</b></p>
+                  <small>
+                    {status === 'connected'
+                      ? 'This project was indexed with an older scanner version. Refresh now to apply current exclusion rules and dependency parser updates.'
+                      : 'Folder reconnect is required to update this index to current scanner rules.'}
+                  </small>
+                  <div className="stale-prompt-actions">
+                    {status === 'connected' && (
+                      <button
+                        className="confirm-delete-btn"
+                        style={{ background: '#7C3AED', borderColor: '#8B5CF6', color: 'white' }}
+                        onClick={(e) => {
+                          setStalePromptId(null);
+                          void handleRefreshOrReconnect(project.id, e);
+                        }}
+                      >
+                        Refresh Index (Recommended)
+                      </button>
+                    )}
+                    {status === 'permission-required' && (
+                      <button
+                        className="confirm-delete-btn"
+                        style={{ background: '#7C3AED', borderColor: '#8B5CF6', color: 'white' }}
+                        onClick={(e) => {
+                          setStalePromptId(null);
+                          void handleRefreshOrReconnect(project.id, e);
+                        }}
+                      >
+                        Reconnect & Refresh
+                      </button>
+                    )}
+                    <button
+                      className="cancel-btn"
+                      onClick={() => {
+                        setStalePromptId(null);
+                        void openProject(project.id, true);
+                      }}
+                    >
+                      View Outdated Cache
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {isPendingDelete && (
                 <div className="delete-confirm-overlay" onClick={(e) => e.stopPropagation()}>

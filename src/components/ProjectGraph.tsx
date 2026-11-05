@@ -4,7 +4,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { AlertTriangle, MapPin, Layers } from 'lucide-react';
 import { DEFAULT_PREFERENCES, type ProjectNode } from '../domain/models';
-import { computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
+import { buildGraphIndex, computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
 import { loadPreferences } from '../storage/db';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor, CLUSTER_COLORS } from '../utils/fileTypes';
@@ -388,22 +388,24 @@ function Scene({
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  // Consume unified viewport
+  const graphIndex = useMemo(() => (project ? buildGraphIndex(project) : null), [project]);
+
+  // Consume unified viewport (decoupled from hover to avoid 3D/viewport rebuilds on mousemove)
   const viewport = useMemo(() => {
     if (!project) return null;
     return computeGraphViewport({
       project,
+      graphIndex: graphIndex ?? undefined,
       mapFocusNodeId,
       selectedNodeId: selectedId,
       expandedNodeIds,
       relationshipMode,
-      hoveredNodeId: hoveredId,
     });
-  }, [project, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode, hoveredId]);
+  }, [project, graphIndex, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode]);
 
   const allById = useMemo(
-    () => new Map((project?.nodes ?? []).map((node) => [node.id, node])),
-    [project]
+    () => graphIndex?.byId ?? new Map((project?.nodes ?? []).map((node) => [node.id, node])),
+    [graphIndex, project]
   );
 
   const selectedPos = selectedId && viewport?.positions3D.get(selectedId) ? viewport.positions3D.get(selectedId)! : null;
@@ -411,10 +413,10 @@ function Scene({
   const showHierarchy = relationshipMode === 'hierarchy' || relationshipMode === 'both';
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
-  // Hover and selection relationship sets for visual dimming
+  // Fast O(1) hover and selection relationship sets for visual dimming (no full-project rescan)
   const activeHighlightedIds = useMemo(() => {
     const targetId = hoveredId ?? selectedId;
-    if (!targetId || !viewport || !project) return null;
+    if (!targetId || !viewport || !project || !graphIndex) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -426,21 +428,17 @@ function Scene({
       if (item.parentId === targetId) set.add(item.id);
     }
 
-    if (node?.path && project.dependencies?.edges) {
-      for (const edge of project.dependencies.edges) {
-        if (edge.sourcePath === node.path && edge.targetResolvedPath) {
-          const tNode = project.nodes.find((n) => n.path === edge.targetResolvedPath);
-          if (tNode && viewport.visibleNodesMap.has(tNode.id)) set.add(tNode.id);
-        }
-        if (edge.targetResolvedPath === node.path) {
-          const sNode = project.nodes.find((n) => n.path === edge.sourcePath);
-          if (sNode && viewport.visibleNodesMap.has(sNode.id)) set.add(sNode.id);
-        }
-      }
+    const outgoing = graphIndex.dependenciesBySourceId.get(targetId) ?? [];
+    for (const item of outgoing) {
+      if (viewport.visibleNodesMap.has(item.targetId)) set.add(item.targetId);
+    }
+    const incoming = graphIndex.dependenciesByTargetId.get(targetId) ?? [];
+    for (const item of incoming) {
+      if (viewport.visibleNodesMap.has(item.sourceId)) set.add(item.sourceId);
     }
 
     return set;
-  }, [hoveredId, selectedId, viewport, project]);
+  }, [hoveredId, selectedId, viewport, project, graphIndex]);
 
   // Curved Dependency edges for 3D
   const depEdges3D = useMemo(() => {
@@ -547,7 +545,8 @@ function Scene({
             node.id === selectedId ||
             node.id === hoveredId);
 
-        const pos = viewport.positions3D.get(node.id) ?? [0, 0, 0];
+        const pos = viewport.positions3D.get(node.id);
+        if (!pos) return null;
         const isFocusRoot = node.id === viewport.focusNode.id;
 
         return (
@@ -572,7 +571,8 @@ function Scene({
 
       {/* Overflow Indicators */}
       {viewport.overflowNodes.map((overflow) => {
-        const pos = viewport.positions3D.get(overflow.id) ?? [0, 0, 0];
+        const pos = viewport.positions3D.get(overflow.id);
+        if (!pos) return null;
         return (
           <OverflowNode3D
             key={overflow.id}

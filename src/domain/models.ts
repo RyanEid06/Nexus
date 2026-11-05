@@ -13,12 +13,14 @@ export const SCANNER_ANALYSIS_VERSION = 2;
 export const DEPENDENCY_PARSER_VERSION = 2;
 export const DEPENDENCY_RESOLVER_VERSION = 2;
 
-export type ScanPhase = 'discovering' | 'analyzing' | 'building-relationships' | 'saving' | 'complete';
+export type ScanPhase = 'discovering' | 'analyzing' | 'building-relationships' | 'finalizing' | 'saving' | 'complete';
 
 export interface ScanProgress {
   phase: ScanPhase;
   discovered: number;
+  totalFilesToProcess?: number;
   totalToAnalyze?: number;
+  processedFiles?: number;
   analyzed: number;
   reused: number;
   warnings: number;

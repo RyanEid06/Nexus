@@ -7,7 +7,7 @@ import {
   findShortestDependencyPath,
   buildDependencyGraph,
 } from '../src/services/dependencies';
-import type { DependencyEdge } from '../domain/models';
+import type { DependencyEdge } from '../src/domain/models';
 
 describe('dependencies service', () => {
   describe('robust lexical parsing', () => {
