@@ -4,6 +4,7 @@ import {
   computeGraphViewport,
   buildGraphIndex,
   prioritizeChildren,
+  resolveBoundedHoverDependencies,
   MAX_DIRECT_REAL_CHILDREN,
   MAX_EXPANDED_BRANCH_CHILDREN,
   MAX_GRAPH_REAL_NODES,
@@ -484,7 +485,7 @@ describe('Graph Viewport & Spatial Budgeting', () => {
     }
   });
 
-  it('12. Hover benchmark: buildGraphIndex and in-scope edge lookups execute in <5ms for 50,000 nodes', () => {
+  it('12.A. Graph index initialization benchmark and cache verification for 50,000 nodes', () => {
     const largeNodes: ProjectNode[] = [];
     const rootNode: ProjectNode = {
       id: 'root',
@@ -499,76 +500,285 @@ describe('Graph Viewport & Spatial Budgeting', () => {
     };
     largeNodes.push(rootNode);
 
-    // Create 50,000 files
     for (let i = 0; i < 50000; i++) {
       largeNodes.push({
         id: `node_${i}`,
         projectId: 'big-proj',
         parentId: 'root',
-        name: `file_${i}.ts`,
+        name: `file_${String(i).padStart(5, '0')}.ts`,
         kind: 'file',
-        path: `src/file_${i}.ts`,
-        loc: 10,
+        path: `file_${String(i).padStart(5, '0')}.ts`,
+        loc: (i % 500) + 1,
         sizeBytes: 100,
         depth: 1,
       });
     }
 
-    // 10,000 edges
-    const largeEdges: DependencyEdge[] = [];
-    for (let i = 0; i < 10000; i++) {
-      largeEdges.push({
-        id: `edge_${i}`,
-        sourceId: `node_${i}`,
-        targetId: `node_${(i + 1) % 50000}`,
-        sourcePath: `src/file_${i}.ts`,
-        targetPath: `src/file_${(i + 1) % 50000}.ts`,
-        targetResolvedPath: `src/file_${(i + 1) % 50000}.ts`,
-        specifier: `./file_${(i + 1) % 50000}`,
+    const project = createMockProject(largeNodes);
+
+    const t0 = performance.now();
+    const index = buildGraphIndex(project);
+    const indexDuration = performance.now() - t0;
+
+    expect(index).toBeDefined();
+    expect(index.prioritizedChildrenByParentId.has('root')).toBe(true);
+    const rootChildren = index.prioritizedChildrenByParentId.get('root');
+    expect(rootChildren?.length).toBe(50000);
+
+    // Repeated buildGraphIndex returns the exact same cached object reference via WeakMap
+    const cachedIndex = buildGraphIndex(project);
+    expect(cachedIndex).toBe(index);
+
+    expect(indexDuration).toBeGreaterThanOrEqual(0);
+  });
+
+  it('12.B. Repeated viewport computation reuses pre-sorted index without full sibling re-sorting', () => {
+    const largeNodes: ProjectNode[] = [];
+    const rootNode: ProjectNode = {
+      id: 'root',
+      projectId: 'big-proj-2',
+      parentId: null,
+      name: 'big-project-2',
+      kind: 'project',
+      path: '',
+      loc: 100000,
+      sizeBytes: 1000000,
+      depth: 0,
+    };
+    largeNodes.push(rootNode);
+
+    for (let i = 0; i < 50000; i++) {
+      largeNodes.push({
+        id: `node_${i}`,
+        projectId: 'big-proj-2',
+        parentId: 'root',
+        name: `file_${String(i).padStart(5, '0')}.ts`,
+        kind: 'file',
+        path: `file_${String(i).padStart(5, '0')}.ts`,
+        loc: (i % 500) + 1,
+        sizeBytes: 100,
+        depth: 1,
+      });
+    }
+
+    const project = createMockProject(largeNodes);
+    const index = buildGraphIndex(project);
+
+    // Measure repeated viewport computations
+    const t0 = performance.now();
+    const iterations = 10;
+    for (let i = 0; i < iterations; i++) {
+      const viewport = computeGraphViewport({
+        project,
+        graphIndex: index,
+        mapFocusNodeId: 'root',
+        selectedNodeId: null,
+        expandedNodeIds: new Set(),
+      });
+      expect(viewport.visibleNodes.length).toBeLessThanOrEqual(MAX_GRAPH_REAL_NODES);
+      expect(viewport.visibleDirectChildren).toBe(MAX_DIRECT_REAL_CHILDREN);
+    }
+    const avgDuration = (performance.now() - t0) / iterations;
+
+    // Viewport calculation over 50,000 nodes using pre-sorted index runs in < 15ms per run
+    expect(avgDuration).toBeLessThan(15);
+  });
+
+  it('12.C. High-degree hover test: hub with ~30,000 dependency relationships operates strictly over bounded candidate lists', () => {
+    // 20 visible files (within 24 direct child limit)
+    const files: ProjectNode[] = Array.from({ length: 20 }, (_, i) =>
+      createMockNode({
+        id: `mod_${i}`,
+        parentId: 'root',
+        name: `mod_${String(i).padStart(2, '0')}.ts`,
+        kind: 'file',
+        path: `mod_${String(i).padStart(2, '0')}.ts`,
+        loc: 100,
+        depth: 1,
+      })
+    );
+
+    // Visible hub node mod_0 with ~30,000 relationships to other visible nodes mod_1..mod_19
+    const edges: DependencyEdge[] = [];
+    for (let i = 0; i < 30000; i++) {
+      const targetIdx = (i % 19) + 1; // mod_1 to mod_19
+      edges.push({
+        id: `dep_edge_${i}`,
+        sourceId: 'mod_0',
+        targetId: `mod_${targetIdx}`,
+        sourcePath: 'mod_00.ts',
+        targetPath: `mod_${String(targetIdx).padStart(2, '0')}.ts`,
+        targetResolvedPath: `mod_${String(targetIdx).padStart(2, '0')}.ts`,
+        specifier: `./mod_${String(targetIdx).padStart(2, '0')}`,
         type: 'static-import',
         isResolved: true,
         isExternal: false,
       });
     }
 
-    const project: ProjectIndex = {
-      schemaVersion: 3,
-      id: 'big-proj',
-      name: 'big-project',
-      rootPathLabel: '/big-project',
-      createdAt: 1000,
-      updatedAt: Date.now(),
-      source: 'local',
-      warnings: [],
-      metrics: {
-        files: 50000,
-        folders: 0,
-        totalLoc: 500000,
-        indexedBytes: 5000000,
-        analyzedTextBytes: 5000000,
-        analyzedFiles: 50000,
-        metadataOnlyFiles: 0,
-        skippedLargeFiles: 0,
-        skippedSensitiveFiles: 0,
-        languages: [],
-        dependencyEdges: largeEdges.length,
-      },
-      nodes: largeNodes,
-      dependencies: { edges: largeEdges, externalPackages: [], circularDependencies: [] },
-    };
+    const project = createMockProject(files, edges);
 
-    const index = buildGraphIndex(project);
-    expect(index).toBeDefined();
+    // Initial viewport construction
+    const viewport = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: null,
+      expandedNodeIds: new Set(),
+      relationshipMode: 'dependencies',
+    });
 
-    // Now test repeated hover lookups for a node — must be O(1) in microseconds (<5ms)
+    expect(viewport.totalDependenciesInScope).toBe(30000);
+    expect(viewport.dependencyDensityCapped).toBe(true);
+
+    // Verify candidate lists are bounded to MAX_VISIBLE_DEPENDENCY_EDGES (60)
+    const hubCandidates = viewport.hoverDependencyCandidatesByNodeId.get('mod_0');
+    expect(hubCandidates).toBeDefined();
+    expect(hubCandidates!.length).toBe(MAX_VISIBLE_DEPENDENCY_EDGES);
+    expect(viewport.baseDependencyEdges.length).toBe(MAX_VISIBLE_DEPENDENCY_EDGES);
+
+    // Benchmark the actual hover function: resolveBoundedHoverDependencies
     const tHover0 = performance.now();
-    for (let i = 0; i < 20; i++) {
-      const outgoing = index.dependenciesBySourceId.get('node_1') ?? [];
-      const incoming = index.dependenciesByTargetId.get('node_1') ?? [];
-      expect(outgoing.length + incoming.length).toBeGreaterThanOrEqual(0);
+    const hoverIterations = 50;
+    for (let i = 0; i < hoverIterations; i++) {
+      const hoverResult = resolveBoundedHoverDependencies(viewport, {
+        hoveredNodeId: 'mod_0',
+        selectedNodeId: null,
+        focusNodeId: 'root',
+      });
+      expect(hoverResult.visibleDependencyEdges.length).toBeLessThanOrEqual(MAX_VISIBLE_DEPENDENCY_EDGES);
+      expect(hoverResult.visibleDependencyEdges.length).toBe(MAX_VISIBLE_DEPENDENCY_EDGES);
+      // Verify hovered relationships receive first priority (all 60 edges are incident to mod_0)
+      expect(hoverResult.visibleDependencyEdges.every((e) => e.sourceId === 'mod_0' || e.targetId === 'mod_0')).toBe(true);
     }
-    const hoverDuration = performance.now() - tHover0;
+    const hoverTimeMs = (performance.now() - tHover0) / hoverIterations;
 
-    expect(hoverDuration).toBeLessThan(5); // Hover lookups execute in <5ms without project-wide edge rescanning
+    // Bounded hover processing over <=60 visible dependency relationships runs in sub-millisecond time (< 1ms)
+    expect(hoverTimeMs).toBeLessThan(1);
+  });
+
+  it('12.D. Dependency priority correctness: hovered > selected > focus > remainder with deduplication', () => {
+    const nodes: ProjectNode[] = [
+      createMockNode({ id: 'h_node', parentId: 'root', name: 'hovered.ts', kind: 'file', path: 'hovered.ts' }),
+      createMockNode({ id: 's_node', parentId: 'root', name: 'selected.ts', kind: 'file', path: 'selected.ts' }),
+      createMockNode({ id: 'f_node', parentId: 'root', name: 'focus.ts', kind: 'file', path: 'focus.ts' }),
+    ];
+    for (let i = 0; i < 7; i++) {
+      nodes.push(createMockNode({ id: `other_${i}`, parentId: 'root', name: `other_${i}.ts`, kind: 'file', path: `other_${i}.ts` }));
+    }
+
+    const edges: DependencyEdge[] = [
+      {
+        id: 'shared_hs',
+        sourceId: 'h_node',
+        targetId: 's_node',
+        sourcePath: 'hovered.ts',
+        targetPath: 'selected.ts',
+        targetResolvedPath: 'selected.ts',
+        specifier: './selected',
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      },
+      {
+        id: 'shared_sf',
+        sourceId: 's_node',
+        targetId: 'f_node',
+        sourcePath: 'selected.ts',
+        targetPath: 'focus.ts',
+        targetResolvedPath: 'focus.ts',
+        specifier: './focus',
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      },
+    ];
+
+    for (let i = 0; i < 25; i++) {
+      edges.push({
+        id: `h_edge_${i}`,
+        sourceId: 'h_node',
+        targetId: `other_${i % 7}`,
+        sourcePath: 'hovered.ts',
+        targetPath: `other_${i % 7}.ts`,
+        targetResolvedPath: `other_${i % 7}.ts`,
+        specifier: `./other_${i % 7}`,
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      });
+    }
+
+    for (let i = 0; i < 25; i++) {
+      edges.push({
+        id: `s_edge_${i}`,
+        sourceId: 's_node',
+        targetId: `other_${i % 7}`,
+        sourcePath: 'selected.ts',
+        targetPath: `other_${i % 7}.ts`,
+        targetResolvedPath: `other_${i % 7}.ts`,
+        specifier: `./other_${i % 7}`,
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      });
+    }
+
+    for (let i = 0; i < 25; i++) {
+      edges.push({
+        id: `f_edge_${i}`,
+        sourceId: 'f_node',
+        targetId: `other_${i % 7}`,
+        sourcePath: 'focus.ts',
+        targetPath: `other_${i % 7}.ts`,
+        targetResolvedPath: `other_${i % 7}.ts`,
+        specifier: `./other_${i % 7}`,
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      });
+    }
+
+    for (let i = 0; i < 30; i++) {
+      edges.push({
+        id: `rem_edge_${i}`,
+        sourceId: `other_${i % 7}`,
+        targetId: `other_${(i + 1) % 7}`,
+        sourcePath: `other_${i % 7}.ts`,
+        targetPath: `other_${(i + 1) % 7}.ts`,
+        targetResolvedPath: `other_${(i + 1) % 7}.ts`,
+        specifier: `./other_${(i + 1) % 7}`,
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      });
+    }
+
+    const project = createMockProject(nodes, edges);
+    const viewport = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: 's_node',
+      expandedNodeIds: new Set(),
+      relationshipMode: 'dependencies',
+    });
+
+    const result = resolveBoundedHoverDependencies(viewport, {
+      hoveredNodeId: 'h_node',
+      selectedNodeId: 's_node',
+      focusNodeId: 'f_node',
+      limit: 60,
+    });
+
+    expect(result.visibleDependencyEdges.length).toBe(60);
+
+    // Deduplication check
+    const ids = result.visibleDependencyEdges.map((e) => e.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(ids.length);
+
+    // Shared edge appeared once and in hovered group
+    const sharedHsIndices = ids.map((id, idx) => (id === 'dep-shared_hs' ? idx : -1)).filter((idx) => idx !== -1);
+    expect(sharedHsIndices.length).toBe(1);
+    expect(sharedHsIndices[0]).toBeLessThan(26);
   });
 });

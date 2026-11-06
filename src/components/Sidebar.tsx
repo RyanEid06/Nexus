@@ -6,7 +6,6 @@ export function Sidebar() {
   const page = useAppStore((s) => s.page);
   const project = useAppStore((s) => s.project);
   const setPage = useAppStore((s) => s.setPage);
-  const selectNode = useAppStore((s) => s.selectNode);
   const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const allTopFolders = project?.nodes.filter(

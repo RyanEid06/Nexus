@@ -5,6 +5,7 @@ import {
   type LocalFileHandle,
   RootAccessError,
   ScanLimitError,
+  isEntryLimitExceeded,
 } from '../src/services/projectScanner';
 import type { AnalysisCategory, ProjectIndex } from '../src/domain/models';
 
@@ -383,15 +384,42 @@ describe('scanDirectoryHandle', () => {
     expect(refreshed.dependencies?.edges.length).toBe(1);
   });
 
-  it('throws ScanLimitError when discovered entries reach maxEntries', async () => {
-    const files = [
+  it('verifies inclusive maxEntries boundary semantics on pure helper (49,999 allowed, 50,000 allowed, 50,001 rejected)', () => {
+    const limit = 50_000;
+    expect(isEntryLimitExceeded(49_999, limit)).toBe(false);
+    expect(isEntryLimitExceeded(50_000, limit)).toBe(false); // Inclusive boundary allowed!
+    expect(isEntryLimitExceeded(50_001, limit)).toBe(true);  // Exceeded: rejected
+  });
+
+  it('proves inclusive scanner traversal boundary: maxEntries = 2 succeeds on 2 entries, throws ScanLimitError on 3 entries', async () => {
+    // 2 entries with maxEntries = 2 must succeed (inclusive)
+    const twoFiles = [
+      createMockFile('f1.ts', 'const a = 1;'),
+      createMockFile('f2.ts', 'const b = 2;'),
+    ];
+    const dirTwo = createMockDirectory('two-files', twoFiles);
+    const resultTwo = await scanDirectoryHandle(dirTwo, { maxEntries: 2 });
+    expect(resultTwo.nodes.filter((n) => n.kind === 'file').length).toBe(2);
+
+    // 3 entries with maxEntries = 2 must throw ScanLimitError reporting limit and actual discovered count
+    const threeFiles = [
       createMockFile('f1.ts', 'const a = 1;'),
       createMockFile('f2.ts', 'const b = 2;'),
       createMockFile('f3.ts', 'const c = 3;'),
     ];
-    const dir = createMockDirectory('limit-test', files);
+    const dirThree = createMockDirectory('three-files', threeFiles);
 
-    await expect(scanDirectoryHandle(dir, { maxEntries: 2 })).rejects.toThrow(ScanLimitError);
+    let caughtError: unknown;
+    try {
+      await scanDirectoryHandle(dirThree, { maxEntries: 2 });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    expect(caughtError).toBeInstanceOf(ScanLimitError);
+    const limitErr = caughtError as ScanLimitError;
+    expect(limitErr.limit).toBe(2);
+    expect(limitErr.discovered).toBe(3);
   });
 
   it('respects nested custom exclusion paths and basename exclusions during traversal', async () => {

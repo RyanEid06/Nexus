@@ -132,6 +132,14 @@ export class ScanLimitError extends Error {
   }
 }
 
+/**
+ * Pure helper verifying inclusive maxEntries boundary semantics:
+ * discovered <= maxEntries is allowed; discovered > maxEntries triggers ScanLimitError.
+ */
+export function isEntryLimitExceeded(discovered: number, maxEntries: number): boolean {
+  return discovered > maxEntries;
+}
+
 export class RootAccessError extends Error {
   constructor(public readonly folderName: string, message: string) {
     super(`Cannot access root folder "${folderName}": ${message}`);
@@ -247,7 +255,7 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
           if (shouldIgnoreEntry(entry.name, entry.kind, path, customExclusions)) continue;
 
           discovered += 1;
-          if (discovered > maxEntries) throw new ScanLimitError(maxEntries, discovered);
+          if (isEntryLimitExceeded(discovered, maxEntries)) throw new ScanLimitError(maxEntries, discovered);
 
           if (entry.kind === 'directory') {
             const id = stableNodeId(projectId, path);

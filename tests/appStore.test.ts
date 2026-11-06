@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useAppStore } from '../src/store/useAppStore';
-import type { ProjectIndex } from '../src/domain/models';
+import type { ProjectIndex, ProjectNode } from '../src/domain/models';
+import { computeGraphViewport, MAX_GRAPH_REAL_NODES } from '../src/services/graphViewport';
 
 const mockProject: ProjectIndex = {
   schemaVersion: 3,
@@ -279,6 +280,148 @@ describe('App Store & Graph State', () => {
       expect(latest.page).toBe('graph');
     });
 
+    function createDeep100Project(): ProjectIndex {
+      const nodes: ProjectNode[] = [
+        { id: 'root', projectId: 'deep-100', parentId: null, name: 'root', path: '', kind: 'project', sizeBytes: 0, loc: 0, depth: 0 },
+      ];
+      let prevId = 'root';
+      let prevPath = '';
+      for (let depth = 1; depth <= 100; depth++) {
+        const dirId = `level${depth}`;
+        const dirPath = prevPath ? `${prevPath}/level${depth}` : `level${depth}`;
+        nodes.push({
+          id: dirId,
+          projectId: 'deep-100',
+          parentId: prevId,
+          name: `level${depth}`,
+          path: dirPath,
+          kind: 'directory',
+          sizeBytes: 0,
+          loc: 0,
+          depth,
+        });
+        prevId = dirId;
+        prevPath = dirPath;
+      }
+      nodes.push({
+        id: 'deepTarget',
+        projectId: 'deep-100',
+        parentId: 'level100',
+        name: 'deepTarget.ts',
+        path: `${prevPath}/deepTarget.ts`,
+        kind: 'file',
+        sizeBytes: 150,
+        loc: 25,
+        depth: 101,
+      });
+
+      return {
+        schemaVersion: 3,
+        id: 'deep-100',
+        name: 'Deep 100 Project',
+        rootPathLabel: 'Deep 100 Project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        source: 'demo',
+        nodes,
+        metrics: {
+          files: 1,
+          folders: 100,
+          totalLoc: 25,
+          indexedBytes: 150,
+          analyzedTextBytes: 150,
+          analyzedFiles: 1,
+          metadataOnlyFiles: 0,
+          skippedLargeFiles: 0,
+          skippedSensitiveFiles: 0,
+          languages: [],
+          dependencyEdges: 0,
+        },
+        warnings: [],
+      };
+    }
+
+    it('5. deep reveal consistency: revealNodeOnMap deep target matches rendered focus and Zustand focus <= 72 nodes', () => {
+      const deepProject = createDeep100Project();
+      useAppStore.getState().setProject(deepProject);
+
+      useAppStore.getState().revealNodeOnMap('deepTarget');
+
+      const state = useAppStore.getState();
+      expect(state.selectedNodeId).toBe('deepTarget');
+      expect(state.mapFocusNodeId).toBe('level100');
+
+      const viewport = computeGraphViewport({
+        project: deepProject,
+        mapFocusNodeId: state.mapFocusNodeId,
+        selectedNodeId: state.selectedNodeId,
+        expandedNodeIds: state.expandedNodeIds,
+      });
+
+      // No hidden difference between rendered focus and Zustand focus
+      expect(viewport.focusNode.id).toBe(state.mapFocusNodeId);
+      expect(viewport.focusNode.id).toBe('level100');
+
+      // Selected file is visible
+      expect(viewport.visibleNodesMap.has('deepTarget')).toBe(true);
+
+      // Strict real node budget
+      expect(viewport.visibleNodes.length).toBeLessThanOrEqual(MAX_GRAPH_REAL_NODES);
+    });
+
+    it('6. deep navigation correctness: navigateUpToParentFocus steps upward coherently matching viewport and history', () => {
+      const deepProject = createDeep100Project();
+      useAppStore.getState().setProject(deepProject);
+      useAppStore.getState().revealNodeOnMap('deepTarget');
+
+      // Move up level 100 -> level 99
+      useAppStore.getState().navigateUpToParentFocus();
+      let state = useAppStore.getState();
+      expect(state.mapFocusNodeId).toBe('level99');
+      let viewport = computeGraphViewport({
+        project: deepProject,
+        mapFocusNodeId: state.mapFocusNodeId,
+        selectedNodeId: state.selectedNodeId,
+        expandedNodeIds: state.expandedNodeIds,
+      });
+      expect(viewport.focusNode.id).toBe('level99');
+      expect(viewport.breadcrumbTrail[viewport.breadcrumbTrail.length - 1].id).toBe('level99');
+
+      // Move up level 99 -> level 98
+      useAppStore.getState().navigateUpToParentFocus();
+      state = useAppStore.getState();
+      expect(state.mapFocusNodeId).toBe('level98');
+      viewport = computeGraphViewport({
+        project: deepProject,
+        mapFocusNodeId: state.mapFocusNodeId,
+        selectedNodeId: state.selectedNodeId,
+        expandedNodeIds: state.expandedNodeIds,
+      });
+      expect(viewport.focusNode.id).toBe('level98');
+
+      // Move up level 98 -> level 97
+      useAppStore.getState().navigateUpToParentFocus();
+      state = useAppStore.getState();
+      expect(state.mapFocusNodeId).toBe('level97');
+      viewport = computeGraphViewport({
+        project: deepProject,
+        mapFocusNodeId: state.mapFocusNodeId,
+        selectedNodeId: state.selectedNodeId,
+        expandedNodeIds: state.expandedNodeIds,
+      });
+      expect(viewport.focusNode.id).toBe('level97');
+
+      // Test Back navigation: no dead Back state, smoothly restores level 98, level 99, level 100
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('level98');
+
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('level99');
+
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('level100');
+    });
+
     it('7. drillDownNode records map focus in history', () => {
       useAppStore.getState().setProject(multiBranchProject);
       useAppStore.getState().drillDownNode('d_src');
@@ -355,6 +498,35 @@ describe('App Store & Graph State', () => {
       useAppStore.getState().closeFileViewer();
       expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
       expect(useAppStore.getState().previewFileId).toBeNull();
+    });
+
+    it('setMapMode updates current history snapshot in place without creating extra step and preserves mode across Back/Forward', () => {
+      useAppStore.getState().setProject(mockProject);
+      const initialHistoryLength = useAppStore.getState().navigationHistory.length;
+
+      // Root starts 2D
+      expect(useAppStore.getState().mapMode).toBe('2d');
+
+      // Switch to 3D: should NOT push a new history entry
+      useAppStore.getState().setMapMode('3d');
+      expect(useAppStore.getState().mapMode).toBe('3d');
+      expect(useAppStore.getState().navigationHistory.length).toBe(initialHistoryLength);
+      expect(useAppStore.getState().navigationHistory[useAppStore.getState().historyIndex].mapMode).toBe('3d');
+
+      // Drill into src
+      useAppStore.getState().drillDownNode('src');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('src');
+      expect(useAppStore.getState().mapMode).toBe('3d');
+
+      // Back -> restores root, which must remain 3D!
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('root');
+      expect(useAppStore.getState().mapMode).toBe('3d');
+
+      // Forward -> restores src, which must also remain 3D!
+      useAppStore.getState().navigateForward();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('src');
+      expect(useAppStore.getState().mapMode).toBe('3d');
     });
   });
 });

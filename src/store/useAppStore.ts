@@ -235,17 +235,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   revealNodeOnMap: (nodeId: string) => {
     const state = get();
     if (!state.project) return;
-    const node = state.project.nodes.find((n) => n.id === nodeId);
+    const nodesById = new Map(state.project.nodes.map((n) => [n.id, n]));
+    const node = nodesById.get(nodeId);
     if (!node) return;
 
     const rootId = state.project.nodes[0]?.id ?? null;
     const nextExpanded = new Set(state.expandedNodeIds);
 
-    // Expand all ancestors leading to this node
-    let curr = node.parentId ? state.project.nodes.find((n) => n.id === node.parentId) : undefined;
+    // Expand all ancestors leading to this node using O(1) Map lookups
+    let curr = node.parentId ? nodesById.get(node.parentId) : undefined;
     while (curr) {
       nextExpanded.add(curr.id);
-      curr = curr.parentId ? state.project.nodes.find((n) => n.id === curr.parentId) : undefined;
+      curr = curr.parentId ? nodesById.get(curr.parentId) : undefined;
     }
 
     let targetFocusId: string;
@@ -316,7 +317,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setMapMode: (mapMode) => set({ mapMode }),
+  setMapMode: (mapMode) => {
+    const state = get();
+    if (state.mapMode === mapMode) return;
+
+    if (state.historyIndex >= 0 && state.navigationHistory[state.historyIndex]) {
+      const updatedHistory = [...state.navigationHistory];
+      updatedHistory[state.historyIndex] = {
+        ...updatedHistory[state.historyIndex],
+        mapMode,
+      };
+      set({ mapMode, navigationHistory: updatedHistory });
+    } else {
+      set({ mapMode });
+    }
+  },
 
   setRelationshipMode: (relationshipMode) => set({ relationshipMode }),
 

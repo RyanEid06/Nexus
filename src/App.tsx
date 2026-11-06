@@ -9,6 +9,10 @@ import { SearchPage } from './components/SearchPage';
 import { SettingsPage } from './components/SettingsPage';
 import { useAppStore } from './store/useAppStore';
 
+if (typeof window !== 'undefined') {
+  (window as unknown as { useAppStore: typeof useAppStore }).useAppStore = useAppStore;
+}
+
 export default function App() {
   const page = useAppStore((s) => s.page);
   const project = useAppStore((s) => s.project);

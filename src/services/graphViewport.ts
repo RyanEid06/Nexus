@@ -59,6 +59,10 @@ export interface GraphViewportModel {
   visibleOutgoingByNodeId: Map<string, ViewportDependencyEdge[]>;
   visibleIncomingByNodeId: Map<string, ViewportDependencyEdge[]>;
 
+  // Bounded hover candidate structures precomputed during viewport creation (capped to <= 60 each)
+  hoverDependencyCandidatesByNodeId: Map<string, ViewportDependencyEdge[]>;
+  baseDependencyEdges: ViewportDependencyEdge[];
+
   // Statistics
   totalDirectChildren: number;
   visibleDirectChildren: number;
@@ -72,7 +76,7 @@ export interface GraphViewportModel {
 
 /**
  * Pre-indexed graph structure memoized per project identity.
- * Precomputes lookups for fast O(1) access so pointer hovers
+ * Precomputes lookups for fast access so pointer hovers and viewport updates
  * never perform full-project iterations over 50,000+ nodes.
  */
 export interface ProjectGraphIndex {
@@ -80,6 +84,7 @@ export interface ProjectGraphIndex {
   byId: Map<string, ProjectNode>;
   byParent: Map<string | null, ProjectNode[]>;
   prioritizedChildrenByParentId: Map<string | null, ProjectNode[]>;
+  directoryCountByParentId: Map<string | null, number>;
   pathToId: Map<string, string>;
   rootNode: ProjectNode;
   dependenciesBySourceId: Map<string, Array<{ edge: DependencyEdge; targetId: string }>>;
@@ -116,7 +121,13 @@ export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
   }
 
   const prioritizedChildrenByParentId = new Map<string | null, ProjectNode[]>();
+  const directoryCountByParentId = new Map<string | null, number>();
   for (const [parentId, children] of byParent.entries()) {
+    let dCount = 0;
+    for (const c of children) {
+      if (c.kind === 'directory') dCount++;
+    }
+    directoryCountByParentId.set(parentId, dCount);
     prioritizedChildrenByParentId.set(parentId, prioritizeChildren(children));
   }
 
@@ -152,6 +163,7 @@ export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
     byId,
     byParent,
     prioritizedChildrenByParentId,
+    directoryCountByParentId,
     pathToId,
     rootNode,
     dependenciesBySourceId,
@@ -211,15 +223,116 @@ export interface PrioritizeDependencyOptions {
   limit?: number;
 }
 
+export interface ResolveHoverDependenciesOptions {
+  hoveredNodeId?: string | null;
+  selectedNodeId?: string | null;
+  focusNodeId?: string | null;
+  limit?: number;
+}
+
 /**
- * Bounded dependency-edge selection method that reprioritizes:
- * 1. hovered-node relationships
- * 2. selected-node relationships
- * 3. focused-node relationships
- * 4. deterministic remaining edges
- * Operating strictly over bounded in-scope edges (between visible nodes),
- * capped at limit (default MAX_VISIBLE_DEPENDENCY_EDGES = 60).
+ * Bounded hover processing over <=60 visible dependency relationships.
+ * Consumes precomputed bounded candidate lists (<= 60 items each) rather than
+ * iterating an unbounded in-scope collection.
+ * Priority order:
+ * 1. Hovered node candidates
+ * 2. Selected node candidates
+ * 3. Focus node candidates
+ * 4. Deterministic base remainder
  */
+export function resolveBoundedHoverDependencies(
+  viewport: {
+    hoverDependencyCandidatesByNodeId: Map<string, ViewportDependencyEdge[]>;
+    baseDependencyEdges: ViewportDependencyEdge[];
+  },
+  options: ResolveHoverDependenciesOptions = {}
+): {
+  visibleDependencyEdges: ViewportDependencyEdge[];
+  visibleOutgoingByNodeId: Map<string, ViewportDependencyEdge[]>;
+  visibleIncomingByNodeId: Map<string, ViewportDependencyEdge[]>;
+} {
+  const limit = options.limit ?? MAX_VISIBLE_DEPENDENCY_EDGES;
+  const { hoveredNodeId, selectedNodeId, focusNodeId } = options;
+
+  const chosenEdges: ViewportDependencyEdge[] = [];
+  const seenIds = new Set<string>();
+
+  const addEdge = (vDep: ViewportDependencyEdge) => {
+    if (chosenEdges.length >= limit) return;
+    if (!seenIds.has(vDep.id)) {
+      seenIds.add(vDep.id);
+      chosenEdges.push(vDep);
+    }
+  };
+
+  // 1. Hovered node candidates (at most 60)
+  if (hoveredNodeId) {
+    const hoveredCandidates = viewport.hoverDependencyCandidatesByNodeId.get(hoveredNodeId);
+    if (hoveredCandidates) {
+      for (const edge of hoveredCandidates) {
+        addEdge(edge);
+        if (chosenEdges.length >= limit) break;
+      }
+    }
+  }
+
+  // 2. Selected node candidates (at most 60)
+  if (selectedNodeId && chosenEdges.length < limit) {
+    const selectedCandidates = viewport.hoverDependencyCandidatesByNodeId.get(selectedNodeId);
+    if (selectedCandidates) {
+      for (const edge of selectedCandidates) {
+        addEdge(edge);
+        if (chosenEdges.length >= limit) break;
+      }
+    }
+  }
+
+  // 3. Focus node candidates (at most 60)
+  if (focusNodeId && chosenEdges.length < limit) {
+    const focusCandidates = viewport.hoverDependencyCandidatesByNodeId.get(focusNodeId);
+    if (focusCandidates) {
+      for (const edge of focusCandidates) {
+        addEdge(edge);
+        if (chosenEdges.length >= limit) break;
+      }
+    }
+  }
+
+  // 4. Base deterministic remainder (at most 60)
+  if (chosenEdges.length < limit) {
+    for (const edge of viewport.baseDependencyEdges) {
+      addEdge(edge);
+      if (chosenEdges.length >= limit) break;
+    }
+  }
+
+  // Build indexed outgoing and incoming maps over only the <= 60 chosen edges
+  const visibleOutgoingByNodeId = new Map<string, ViewportDependencyEdge[]>();
+  const visibleIncomingByNodeId = new Map<string, ViewportDependencyEdge[]>();
+
+  for (const vDep of chosenEdges) {
+    let outList = visibleOutgoingByNodeId.get(vDep.sourceId);
+    if (!outList) {
+      outList = [];
+      visibleOutgoingByNodeId.set(vDep.sourceId, outList);
+    }
+    outList.push(vDep);
+
+    let inList = visibleIncomingByNodeId.get(vDep.targetId);
+    if (!inList) {
+      inList = [];
+      visibleIncomingByNodeId.set(vDep.targetId, inList);
+    }
+    inList.push(vDep);
+  }
+
+  return {
+    visibleDependencyEdges: chosenEdges,
+    visibleOutgoingByNodeId,
+    visibleIncomingByNodeId,
+  };
+}
+
 export function prioritizeDependencyEdges(
   inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }>,
   options: PrioritizeDependencyOptions = {}
@@ -310,7 +423,7 @@ export function computeGraphViewport({
   hoveredNodeId = null,
 }: ComputeViewportOptions): GraphViewportModel {
   const index = graphIndex ?? buildGraphIndex(project);
-  const { byId, byParent, rootNode } = index;
+  const { byId, rootNode } = index;
 
   // 1. Resolve Focus Node & Breadcrumb Trail
   let focusNode = (mapFocusNodeId ? byId.get(mapFocusNodeId) : null) ?? rootNode;
@@ -370,7 +483,6 @@ export function computeGraphViewport({
   const totalDirectChildren = sortedDirectChildren.length;
 
   const visibleDirectChildrenList: ProjectNode[] = [];
-  const hiddenDirectChildrenList: ProjectNode[] = [];
 
   if (directPathChild) {
     visibleDirectChildrenList.push(directPathChild);
@@ -381,15 +493,13 @@ export function computeGraphViewport({
     0,
     Math.min(MAX_DIRECT_REAL_CHILDREN - (directPathChild ? 1 : 0), budgetRemaining)
   );
+  const targetDirectSlots = directPathChild ? maxOtherDirectSlots + 1 : maxOtherDirectSlots;
 
   for (const child of sortedDirectChildren) {
+    if (visibleDirectChildrenList.length >= targetDirectSlots) break;
     if (directPathChild && child.id === directPathChild.id) continue;
-    if (visibleDirectChildrenList.length < (directPathChild ? maxOtherDirectSlots + 1 : maxOtherDirectSlots)) {
-      visibleDirectChildrenList.push(child);
-      budgetRemaining -= 1;
-    } else {
-      hiddenDirectChildrenList.push(child);
-    }
+    visibleDirectChildrenList.push(child);
+    budgetRemaining -= 1;
   }
 
   const hiddenDirectChildren = totalDirectChildren - visibleDirectChildrenList.length;
@@ -455,8 +565,18 @@ export function computeGraphViewport({
 
   // Focus direct children overflow indicator
   if (hiddenDirectChildren > 0) {
-    const hiddenDirs = hiddenDirectChildrenList.filter((n) => n.kind === 'directory').length;
-    const hiddenFiles = hiddenDirectChildrenList.filter((n) => n.kind === 'file').length;
+    const totalDirs = index.directoryCountByParentId?.get(focusNode.id) ?? 0;
+    const totalFiles = totalDirectChildren - totalDirs;
+
+    let visibleDirs = 0;
+    let visibleFiles = 0;
+    for (const c of visibleDirectChildrenList) {
+      if (c.kind === 'directory') visibleDirs += 1;
+      else if (c.kind === 'file') visibleFiles += 1;
+    }
+
+    const hiddenDirs = Math.max(0, totalDirs - visibleDirs);
+    const hiddenFiles = Math.max(0, totalFiles - visibleFiles);
 
     let label = `+ ${hiddenDirectChildren.toLocaleString()} more`;
     if (hiddenDirs > 0 && hiddenFiles > 0) {
@@ -661,7 +781,9 @@ export function computeGraphViewport({
 
   // Step 9: Adaptive Dependency Edges using Pre-indexed Dependency Adjacency
   // Iterates ONLY over the <= 72 visible nodes rather than all project-wide edges.
-  let inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+  const inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+  const hoverDependencyCandidatesByNodeId = new Map<string, ViewportDependencyEdge[]>();
+  const baseDependencyEdges: ViewportDependencyEdge[] = [];
   let visibleDependencyEdges: ViewportDependencyEdge[] = [];
   let visibleOutgoingByNodeId = new Map<string, ViewportDependencyEdge[]>();
   let visibleIncomingByNodeId = new Map<string, ViewportDependencyEdge[]>();
@@ -685,12 +807,69 @@ export function computeGraphViewport({
     totalDependenciesInScope = inScopeEdges.length;
     dependencyDensityCapped = totalDependenciesInScope > MAX_VISIBLE_DEPENDENCY_EDGES;
 
-    const depResult = prioritizeDependencyEdges(inScopeEdges, {
-      hoveredNodeId,
-      selectedNodeId,
-      focusNodeId: focusNode.id,
-      limit: MAX_VISIBLE_DEPENDENCY_EDGES,
-    });
+    // Precompute bounded candidate structures per visible node (each capped to MAX_VISIBLE_DEPENDENCY_EDGES = 60)
+    for (const vNode of visibleNodes) {
+      const candidates: ViewportDependencyEdge[] = [];
+      const seenEdgeIds = new Set<string>();
+
+      const outgoing = index.dependenciesBySourceId.get(vNode.id);
+      if (outgoing) {
+        for (const item of outgoing) {
+          if (visibleNodesMap.has(item.targetId)) {
+            seenEdgeIds.add(item.edge.id);
+            candidates.push({
+              id: `dep-${item.edge.id}`,
+              sourceId: vNode.id,
+              targetId: item.targetId,
+              edge: item.edge,
+            });
+            if (candidates.length >= MAX_VISIBLE_DEPENDENCY_EDGES) break;
+          }
+        }
+      }
+
+      if (candidates.length < MAX_VISIBLE_DEPENDENCY_EDGES) {
+        const incoming = index.dependenciesByTargetId.get(vNode.id);
+        if (incoming) {
+          for (const item of incoming) {
+            if (visibleNodesMap.has(item.sourceId) && !seenEdgeIds.has(item.edge.id)) {
+              seenEdgeIds.add(item.edge.id);
+              candidates.push({
+                id: `dep-${item.edge.id}`,
+                sourceId: item.sourceId,
+                targetId: vNode.id,
+                edge: item.edge,
+              });
+              if (candidates.length >= MAX_VISIBLE_DEPENDENCY_EDGES) break;
+            }
+          }
+        }
+      }
+
+      hoverDependencyCandidatesByNodeId.set(vNode.id, candidates);
+    }
+
+    // Precompute bounded deterministic fallback/base edge list (capped to MAX_VISIBLE_DEPENDENCY_EDGES = 60)
+    for (let i = 0; i < Math.min(inScopeEdges.length, MAX_VISIBLE_DEPENDENCY_EDGES); i++) {
+      const item = inScopeEdges[i];
+      baseDependencyEdges.push({
+        id: `dep-${item.edge.id}`,
+        sourceId: item.sId,
+        targetId: item.tId,
+        edge: item.edge,
+      });
+    }
+
+    // Bounded hover processing over <=60 visible dependency relationships
+    const depResult = resolveBoundedHoverDependencies(
+      { hoverDependencyCandidatesByNodeId, baseDependencyEdges },
+      {
+        hoveredNodeId,
+        selectedNodeId,
+        focusNodeId: focusNode.id,
+        limit: MAX_VISIBLE_DEPENDENCY_EDGES,
+      }
+    );
 
     visibleDependencyEdges = depResult.visibleDependencyEdges;
     visibleOutgoingByNodeId = depResult.visibleOutgoingByNodeId;
@@ -712,6 +891,8 @@ export function computeGraphViewport({
     visibleDependencyEdges,
     visibleOutgoingByNodeId,
     visibleIncomingByNodeId,
+    hoverDependencyCandidatesByNodeId,
+    baseDependencyEdges,
     totalDirectChildren,
     visibleDirectChildren: visibleDirectChildrenList.length,
     hiddenDirectChildren,

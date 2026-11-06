@@ -10,7 +10,7 @@ import type { Node2DPosition } from '../services/layout';
 import {
   buildGraphIndex,
   computeGraphViewport,
-  prioritizeDependencyEdges,
+  resolveBoundedHoverDependencies,
   type ViewportOverflowNode,
 } from '../services/graphViewport';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
@@ -142,7 +142,7 @@ export function ProjectGraph2D({
     return list;
   }, [viewport, project]);
 
-  // Dynamically prioritized dependency edges (reprioritizes hovered node relationships without scanning project dependencies)
+  // Bounded hover processing over <=60 visible dependency relationships (consumes precomputed candidates)
   const { visibleDependencyEdges, visibleOutgoingByNodeId, visibleIncomingByNodeId } = useMemo(() => {
     if (!viewport || !project) {
       return {
@@ -158,7 +158,7 @@ export function ProjectGraph2D({
         visibleIncomingByNodeId: viewport.visibleIncomingByNodeId,
       };
     }
-    return prioritizeDependencyEdges(viewport.inScopeDependencyEdges, {
+    return resolveBoundedHoverDependencies(viewport, {
       hoveredNodeId,
       selectedNodeId: selectedId,
       focusNodeId: viewport.focusNode.id,

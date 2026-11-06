@@ -21,8 +21,6 @@ export function FileViewer() {
   const project = useAppStore((s) => s.project);
   const previewFileId = useAppStore((s) => s.previewFileId);
   const closeFileViewer = useAppStore((s) => s.closeFileViewer);
-  const selectNode = useAppStore((s) => s.selectNode);
-  const setPage = useAppStore((s) => s.setPage);
   const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const [data, setData] = useState<FilePreviewResult | null>(null);

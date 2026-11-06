@@ -6,10 +6,11 @@ import { AlertTriangle, MapPin, Layers } from 'lucide-react';
 import {
   buildGraphIndex,
   computeGraphViewport,
-  prioritizeDependencyEdges,
+  resolveBoundedHoverDependencies,
   type ViewportOverflowNode,
 } from '../services/graphViewport';
 import { loadPreferences } from '../storage/db';
+import { DEFAULT_PREFERENCES, type ProjectNode } from '../domain/models';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor, CLUSTER_COLORS } from '../utils/fileTypes';
 
@@ -417,7 +418,7 @@ function Scene({
   const showHierarchy = relationshipMode === 'hierarchy' || relationshipMode === 'both';
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
-  // Dynamically prioritized dependency edges (reprioritizes hovered node relationships without scanning project dependencies)
+  // Bounded hover processing over <=60 visible dependency relationships (consumes precomputed candidates)
   const { visibleDependencyEdges, visibleOutgoingByNodeId, visibleIncomingByNodeId } = useMemo(() => {
     if (!viewport || !project) {
       return {
@@ -433,7 +434,7 @@ function Scene({
         visibleIncomingByNodeId: viewport.visibleIncomingByNodeId,
       };
     }
-    return prioritizeDependencyEdges(viewport.inScopeDependencyEdges, {
+    return resolveBoundedHoverDependencies(viewport, {
       hoveredNodeId: hoveredId,
       selectedNodeId: selectedId,
       focusNodeId: viewport.focusNode.id,
