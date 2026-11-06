@@ -67,6 +67,7 @@ export function SearchPage() {
   const setPage = useAppStore((s) => s.setPage);
   const openFileViewer = useAppStore((s) => s.openFileViewer);
   const expandNode = useAppStore((s) => s.expandNode);
+  const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const query = q.trim();
@@ -89,20 +90,17 @@ export function SearchPage() {
   }, [results]);
 
   const handleActivateNode = (node: ProjectNode) => {
-    selectNode(node.id);
     if (node.kind === 'file') {
+      selectNode(node.id);
       openFileViewer(node.id);
     } else {
-      expandNode(node.id);
-      setPage('graph');
+      revealNodeOnMap(node.id);
     }
   };
 
   const handleShowOnMap = (e: React.MouseEvent, node: ProjectNode) => {
     e.stopPropagation();
-    selectNode(node.id);
-    expandNode(node.id);
-    setPage('graph');
+    revealNodeOnMap(node.id);
   };
 
   const handleViewInStructure = (e: React.MouseEvent, node: ProjectNode) => {

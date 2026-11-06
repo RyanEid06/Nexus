@@ -247,7 +247,7 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
           if (shouldIgnoreEntry(entry.name, entry.kind, path, customExclusions)) continue;
 
           discovered += 1;
-          if (discovered >= maxEntries) throw new ScanLimitError(maxEntries, discovered);
+          if (discovered > maxEntries) throw new ScanLimitError(maxEntries, discovered);
 
           if (entry.kind === 'directory') {
             const id = stableNodeId(projectId, path);

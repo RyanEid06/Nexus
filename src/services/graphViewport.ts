@@ -55,6 +55,9 @@ export interface GraphViewportModel {
   // Edges
   hierarchyEdges: ViewportHierarchyEdge[];
   visibleDependencyEdges: ViewportDependencyEdge[];
+  inScopeDependencyEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }>;
+  visibleOutgoingByNodeId: Map<string, ViewportDependencyEdge[]>;
+  visibleIncomingByNodeId: Map<string, ViewportDependencyEdge[]>;
 
   // Statistics
   totalDirectChildren: number;
@@ -76,6 +79,7 @@ export interface ProjectGraphIndex {
   project: ProjectIndex;
   byId: Map<string, ProjectNode>;
   byParent: Map<string | null, ProjectNode[]>;
+  prioritizedChildrenByParentId: Map<string | null, ProjectNode[]>;
   pathToId: Map<string, string>;
   rootNode: ProjectNode;
   dependenciesBySourceId: Map<string, Array<{ edge: DependencyEdge; targetId: string }>>;
@@ -111,6 +115,11 @@ export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
     rootNode = project.nodes[0];
   }
 
+  const prioritizedChildrenByParentId = new Map<string | null, ProjectNode[]>();
+  for (const [parentId, children] of byParent.entries()) {
+    prioritizedChildrenByParentId.set(parentId, prioritizeChildren(children));
+  }
+
   const dependenciesBySourceId = new Map<string, Array<{ edge: DependencyEdge; targetId: string }>>();
   const dependenciesByTargetId = new Map<string, Array<{ edge: DependencyEdge; sourceId: string }>>();
 
@@ -142,6 +151,7 @@ export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
     project,
     byId,
     byParent,
+    prioritizedChildrenByParentId,
     pathToId,
     rootNode,
     dependenciesBySourceId,
@@ -194,6 +204,97 @@ export interface ComputeViewportOptions {
   hoveredNodeId?: string | null;
 }
 
+export interface PrioritizeDependencyOptions {
+  hoveredNodeId?: string | null;
+  selectedNodeId?: string | null;
+  focusNodeId?: string | null;
+  limit?: number;
+}
+
+/**
+ * Bounded dependency-edge selection method that reprioritizes:
+ * 1. hovered-node relationships
+ * 2. selected-node relationships
+ * 3. focused-node relationships
+ * 4. deterministic remaining edges
+ * Operating strictly over bounded in-scope edges (between visible nodes),
+ * capped at limit (default MAX_VISIBLE_DEPENDENCY_EDGES = 60).
+ */
+export function prioritizeDependencyEdges(
+  inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }>,
+  options: PrioritizeDependencyOptions = {}
+): {
+  visibleDependencyEdges: ViewportDependencyEdge[];
+  visibleOutgoingByNodeId: Map<string, ViewportDependencyEdge[]>;
+  visibleIncomingByNodeId: Map<string, ViewportDependencyEdge[]>;
+} {
+  const limit = options.limit ?? MAX_VISIBLE_DEPENDENCY_EDGES;
+  const { hoveredNodeId, selectedNodeId, focusNodeId } = options;
+
+  let chosenEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }>;
+
+  if (inScopeEdges.length <= limit) {
+    chosenEdges = inScopeEdges;
+  } else {
+    const hoveredGroup: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+    const selectedGroup: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+    const focusGroup: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+    const remainingGroup: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+
+    for (const item of inScopeEdges) {
+      const isHovered = Boolean(hoveredNodeId && (item.sId === hoveredNodeId || item.tId === hoveredNodeId));
+      const isSelected = Boolean(selectedNodeId && (item.sId === selectedNodeId || item.tId === selectedNodeId));
+      const isFocused = Boolean(focusNodeId && (item.sId === focusNodeId || item.tId === focusNodeId));
+
+      if (isHovered) {
+        hoveredGroup.push(item);
+      } else if (isSelected) {
+        selectedGroup.push(item);
+      } else if (isFocused) {
+        focusGroup.push(item);
+      } else {
+        remainingGroup.push(item);
+      }
+    }
+
+    chosenEdges = [...hoveredGroup, ...selectedGroup, ...focusGroup, ...remainingGroup].slice(0, limit);
+  }
+
+  const visibleDependencyEdges: ViewportDependencyEdge[] = [];
+  const visibleOutgoingByNodeId = new Map<string, ViewportDependencyEdge[]>();
+  const visibleIncomingByNodeId = new Map<string, ViewportDependencyEdge[]>();
+
+  for (const { edge, sId, tId } of chosenEdges) {
+    const vDep: ViewportDependencyEdge = {
+      id: `dep-${edge.id}`,
+      sourceId: sId,
+      targetId: tId,
+      edge,
+    };
+    visibleDependencyEdges.push(vDep);
+
+    let outList = visibleOutgoingByNodeId.get(sId);
+    if (!outList) {
+      outList = [];
+      visibleOutgoingByNodeId.set(sId, outList);
+    }
+    outList.push(vDep);
+
+    let inList = visibleIncomingByNodeId.get(tId);
+    if (!inList) {
+      inList = [];
+      visibleIncomingByNodeId.set(tId, inList);
+    }
+    inList.push(vDep);
+  }
+
+  return {
+    visibleDependencyEdges,
+    visibleOutgoingByNodeId,
+    visibleIncomingByNodeId,
+  };
+}
+
 /**
  * Builds the unified visibility model consumed identically by both 2D and 3D maps.
  * Enforces a strict maximum of MAX_GRAPH_REAL_NODES (72).
@@ -235,12 +336,11 @@ export function computeGraphViewport({
     }
   }
 
-  // If selected path is longer than total available capacity (71 nodes below focus),
-  // drill effective focus down toward selected node so the remaining chain fits strictly within budget.
+  // If descendant path is deeper than available capacity (71 nodes below focus),
+  // bound the selected path nodes so they strictly fit within MAX_GRAPH_REAL_NODES - 1,
+  // while keeping focusNode strictly equal to mapFocusNodeId / store focus.
   if (isDescendantOfFocus && fullPathDown.length > MAX_GRAPH_REAL_NODES - 1) {
-    const shiftCount = fullPathDown.length - (MAX_GRAPH_REAL_NODES - 1);
-    focusNode = fullPathDown[shiftCount - 1];
-    fullPathDown.splice(0, shiftCount);
+    fullPathDown.splice(MAX_GRAPH_REAL_NODES - 1);
   }
 
   const isProjectRootFocused = focusNode.id === rootNode.id;
@@ -265,10 +365,9 @@ export function computeGraphViewport({
 
   const directPathChild = selectedPathNodes.length > 0 ? selectedPathNodes[0] : null;
 
-  // Step 3: Direct Children of Focus Node
-  const rawDirectChildren = byParent.get(focusNode.id) ?? [];
-  const totalDirectChildren = rawDirectChildren.length;
-  const sortedDirectChildren = prioritizeChildren(rawDirectChildren);
+  // Step 3: Direct Children of Focus Node (Pre-sorted in index, NO repeated sorting)
+  const sortedDirectChildren = index.prioritizedChildrenByParentId.get(focusNode.id) ?? [];
+  const totalDirectChildren = sortedDirectChildren.length;
 
   const visibleDirectChildrenList: ProjectNode[] = [];
   const hiddenDirectChildrenList: ProjectNode[] = [];
@@ -295,14 +394,14 @@ export function computeGraphViewport({
 
   const hiddenDirectChildren = totalDirectChildren - visibleDirectChildrenList.length;
 
-  // Step 4: Expanded Child Branches
+  // Step 4: Expanded Child Branches (Pre-sorted in index, NO repeated sorting)
   const visibleBranchChildren: ProjectNode[] = [];
   const branchOverflowMap = new Map<string, { hiddenCount: number; totalCount: number }>();
 
   for (const child of visibleDirectChildrenList) {
     if (child.kind === 'directory' && expandedNodeIds.has(child.id)) {
-      const rawBranchChildren = byParent.get(child.id) ?? [];
-      const totalBranch = rawBranchChildren.length;
+      const sortedBranch = index.prioritizedChildrenByParentId.get(child.id) ?? [];
+      const totalBranch = sortedBranch.length;
       if (totalBranch === 0) continue;
 
       // Check if any selectedPathNode is a direct child of this directory
@@ -318,7 +417,6 @@ export function computeGraphViewport({
         branchShown.push(pathBranchChild);
       }
 
-      const sortedBranch = prioritizeChildren(rawBranchChildren);
       for (const b of sortedBranch) {
         if (pathBranchChild && b.id === pathBranchChild.id) continue;
         if (branchShown.length < (pathBranchChild ? maxBranchSlots + 1 : maxBranchSlots)) {
@@ -563,15 +661,16 @@ export function computeGraphViewport({
 
   // Step 9: Adaptive Dependency Edges using Pre-indexed Dependency Adjacency
   // Iterates ONLY over the <= 72 visible nodes rather than all project-wide edges.
-  const visibleDependencyEdges: ViewportDependencyEdge[] = [];
+  let inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
+  let visibleDependencyEdges: ViewportDependencyEdge[] = [];
+  let visibleOutgoingByNodeId = new Map<string, ViewportDependencyEdge[]>();
+  let visibleIncomingByNodeId = new Map<string, ViewportDependencyEdge[]>();
   let totalDependenciesInScope = 0;
   let dependencyDensityCapped = false;
 
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
   if (showDependencies) {
-    const inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
-
     for (const vNode of visibleNodes) {
       const outgoing = index.dependenciesBySourceId.get(vNode.id);
       if (outgoing) {
@@ -584,44 +683,18 @@ export function computeGraphViewport({
     }
 
     totalDependenciesInScope = inScopeEdges.length;
+    dependencyDensityCapped = totalDependenciesInScope > MAX_VISIBLE_DEPENDENCY_EDGES;
 
-    if (totalDependenciesInScope > MAX_VISIBLE_DEPENDENCY_EDGES) {
-      dependencyDensityCapped = true;
-      const priorityIds = new Set<string>();
-      if (selectedNodeId) priorityIds.add(selectedNodeId);
-      if (hoveredNodeId) priorityIds.add(hoveredNodeId);
-      priorityIds.add(focusNode.id);
+    const depResult = prioritizeDependencyEdges(inScopeEdges, {
+      hoveredNodeId,
+      selectedNodeId,
+      focusNodeId: focusNode.id,
+      limit: MAX_VISIBLE_DEPENDENCY_EDGES,
+    });
 
-      const prioritized: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
-      const remainder: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
-
-      for (const item of inScopeEdges) {
-        if (priorityIds.has(item.sId) || priorityIds.has(item.tId)) {
-          prioritized.push(item);
-        } else {
-          remainder.push(item);
-        }
-      }
-
-      const capped = [...prioritized, ...remainder].slice(0, MAX_VISIBLE_DEPENDENCY_EDGES);
-      for (const { edge, sId, tId } of capped) {
-        visibleDependencyEdges.push({
-          id: `dep-${edge.id}`,
-          sourceId: sId,
-          targetId: tId,
-          edge,
-        });
-      }
-    } else {
-      for (const { edge, sId, tId } of inScopeEdges) {
-        visibleDependencyEdges.push({
-          id: `dep-${edge.id}`,
-          sourceId: sId,
-          targetId: tId,
-          edge,
-        });
-      }
-    }
+    visibleDependencyEdges = depResult.visibleDependencyEdges;
+    visibleOutgoingByNodeId = depResult.visibleOutgoingByNodeId;
+    visibleIncomingByNodeId = depResult.visibleIncomingByNodeId;
   }
 
   return {
@@ -635,7 +708,10 @@ export function computeGraphViewport({
     positions2D,
     positions3D,
     hierarchyEdges,
+    inScopeDependencyEdges: inScopeEdges,
     visibleDependencyEdges,
+    visibleOutgoingByNodeId,
+    visibleIncomingByNodeId,
     totalDirectChildren,
     visibleDirectChildren: visibleDirectChildrenList.length,
     hiddenDirectChildren,

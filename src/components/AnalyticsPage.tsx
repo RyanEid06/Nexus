@@ -23,6 +23,7 @@ export function AnalyticsPage() {
   const setPage = useAppStore((s) => s.setPage);
   const openFileViewer = useAppStore((s) => s.openFileViewer);
   const expandNode = useAppStore((s) => s.expandNode);
+  const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const m = project?.metrics;
   const deps = project?.dependencies;
@@ -105,12 +106,11 @@ export function AnalyticsPage() {
   const handleOpenPath = (path: string) => {
     const node = project.nodes.find((n) => n.path === path);
     if (node) {
-      selectNode(node.id);
       if (node.kind === 'file') {
+        selectNode(node.id);
         openFileViewer(node.id);
       } else {
-        expandNode(node.id);
-        setPage('graph');
+        revealNodeOnMap(node.id);
       }
     }
   };
@@ -119,9 +119,7 @@ export function AnalyticsPage() {
     e.stopPropagation();
     const node = project.nodes.find((n) => n.path === path);
     if (node) {
-      selectNode(node.id);
-      expandNode(node.id);
-      setPage('graph');
+      revealNodeOnMap(node.id);
     }
   };
 

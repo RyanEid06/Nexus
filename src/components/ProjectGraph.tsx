@@ -3,8 +3,12 @@ import { Html, Line, OrbitControls, Stars } from '@react-three/drei';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { AlertTriangle, MapPin, Layers } from 'lucide-react';
-import { DEFAULT_PREFERENCES, type ProjectNode } from '../domain/models';
-import { buildGraphIndex, computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
+import {
+  buildGraphIndex,
+  computeGraphViewport,
+  prioritizeDependencyEdges,
+  type ViewportOverflowNode,
+} from '../services/graphViewport';
 import { loadPreferences } from '../storage/db';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor, CLUSTER_COLORS } from '../utils/fileTypes';
@@ -413,10 +417,34 @@ function Scene({
   const showHierarchy = relationshipMode === 'hierarchy' || relationshipMode === 'both';
   const showDependencies = relationshipMode === 'dependencies' || relationshipMode === 'both';
 
-  // Fast O(1) hover and selection relationship sets for visual dimming (no full-project rescan)
+  // Dynamically prioritized dependency edges (reprioritizes hovered node relationships without scanning project dependencies)
+  const { visibleDependencyEdges, visibleOutgoingByNodeId, visibleIncomingByNodeId } = useMemo(() => {
+    if (!viewport || !project) {
+      return {
+        visibleDependencyEdges: [],
+        visibleOutgoingByNodeId: new Map(),
+        visibleIncomingByNodeId: new Map(),
+      };
+    }
+    if (!hoveredId) {
+      return {
+        visibleDependencyEdges: viewport.visibleDependencyEdges,
+        visibleOutgoingByNodeId: viewport.visibleOutgoingByNodeId,
+        visibleIncomingByNodeId: viewport.visibleIncomingByNodeId,
+      };
+    }
+    return prioritizeDependencyEdges(viewport.inScopeDependencyEdges, {
+      hoveredNodeId: hoveredId,
+      selectedNodeId: selectedId,
+      focusNodeId: viewport.focusNode.id,
+    });
+  }, [viewport, project, hoveredId, selectedId]);
+
+  // Fast hover and selection relationship sets for visual dimming
+  // Strictly bounded over the <= 60 visible dependency relationships
   const activeHighlightedIds = useMemo(() => {
     const targetId = hoveredId ?? selectedId;
-    if (!targetId || !viewport || !project || !graphIndex) return null;
+    if (!targetId || !viewport || !project) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -428,24 +456,24 @@ function Scene({
       if (item.parentId === targetId) set.add(item.id);
     }
 
-    const outgoing = graphIndex.dependenciesBySourceId.get(targetId) ?? [];
+    const outgoing = visibleOutgoingByNodeId.get(targetId) ?? [];
     for (const item of outgoing) {
-      if (viewport.visibleNodesMap.has(item.targetId)) set.add(item.targetId);
+      set.add(item.targetId);
     }
-    const incoming = graphIndex.dependenciesByTargetId.get(targetId) ?? [];
+    const incoming = visibleIncomingByNodeId.get(targetId) ?? [];
     for (const item of incoming) {
-      if (viewport.visibleNodesMap.has(item.sourceId)) set.add(item.sourceId);
+      set.add(item.sourceId);
     }
 
     return set;
-  }, [hoveredId, selectedId, viewport, project, graphIndex]);
+  }, [hoveredId, selectedId, viewport, project, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
 
   // Curved Dependency edges for 3D
   const depEdges3D = useMemo(() => {
     if (!showDependencies || !viewport) return [];
 
     const curves: Array<{ id: string; points: Array<[number, number, number]>; isHighlighted: boolean }> = [];
-    for (const dep of viewport.visibleDependencyEdges) {
+    for (const dep of visibleDependencyEdges) {
       const p1 = viewport.positions3D.get(dep.sourceId);
       const p2 = viewport.positions3D.get(dep.targetId);
       if (p1 && p2) {

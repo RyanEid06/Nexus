@@ -177,5 +177,185 @@ describe('App Store & Graph State', () => {
     expect(useAppStore.getState().previewFileId).toBe('f1');
     expect(useAppStore.getState().selectedNodeId).toBe('f1');
   });
+
+  describe('revealNodeOnMap and Map Focus History', () => {
+    const multiBranchProject: ProjectIndex = {
+      schemaVersion: 3,
+      id: 'multi-branch',
+      name: 'Multi Branch Project',
+      rootPathLabel: 'Multi Branch Project',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      source: 'demo',
+      nodes: [
+        { id: 'root', projectId: 'multi-branch', parentId: null, name: 'root', path: '', kind: 'project', sizeBytes: 0, loc: 0, depth: 0 },
+        // Branch 1: src/frontend/components/Button.tsx
+        { id: 'd_src', projectId: 'multi-branch', parentId: 'root', name: 'src', path: 'src', kind: 'directory', sizeBytes: 0, loc: 0, depth: 1 },
+        { id: 'd_frontend', projectId: 'multi-branch', parentId: 'd_src', name: 'frontend', path: 'src/frontend', kind: 'directory', sizeBytes: 0, loc: 0, depth: 2 },
+        { id: 'd_components', projectId: 'multi-branch', parentId: 'd_frontend', name: 'components', path: 'src/frontend/components', kind: 'directory', sizeBytes: 0, loc: 0, depth: 3 },
+        { id: 'f_button', projectId: 'multi-branch', parentId: 'd_components', name: 'Button.tsx', path: 'src/frontend/components/Button.tsx', kind: 'file', sizeBytes: 100, loc: 20, depth: 4 },
+        // Branch 2: server/database/UserRepository.ts
+        { id: 'd_server', projectId: 'multi-branch', parentId: 'root', name: 'server', path: 'server', kind: 'directory', sizeBytes: 0, loc: 0, depth: 1 },
+        { id: 'd_database', projectId: 'multi-branch', parentId: 'd_server', name: 'database', path: 'server/database', kind: 'directory', sizeBytes: 0, loc: 0, depth: 2 },
+        { id: 'f_user_repo', projectId: 'multi-branch', parentId: 'd_database', name: 'UserRepository.ts', path: 'server/database/UserRepository.ts', kind: 'file', sizeBytes: 500, loc: 80, depth: 3 },
+      ],
+      metrics: {
+        files: 2,
+        folders: 5,
+        totalLoc: 100,
+        indexedBytes: 600,
+        analyzedTextBytes: 600,
+        analyzedFiles: 2,
+        metadataOnlyFiles: 0,
+        skippedLargeFiles: 0,
+        skippedSensitiveFiles: 0,
+        languages: [],
+        dependencyEdges: 0,
+      },
+      warnings: [],
+    };
+
+    it('1. revealNodeOnMap file from unrelated branch sets parent as map focus, selects file, expands ancestors, and switches to graph', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      // Currently focused on src/frontend/components
+      useAppStore.getState().drillDownNode('d_src');
+      useAppStore.getState().drillDownNode('d_frontend');
+      useAppStore.getState().drillDownNode('d_components');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_components');
+
+      // Now reveal UserRepository.ts from unrelated server branch
+      useAppStore.getState().revealNodeOnMap('f_user_repo');
+
+      const state = useAppStore.getState();
+      expect(state.selectedNodeId).toBe('f_user_repo');
+      expect(state.mapFocusNodeId).toBe('d_database'); // Parent directory of UserRepository.ts
+      expect(state.page).toBe('graph');
+      expect(state.previewFileId).toBeNull();
+      // Ancestors of UserRepository.ts must be expanded
+      expect(state.expandedNodeIds.has('d_server')).toBe(true);
+      expect(state.expandedNodeIds.has('d_database')).toBe(true);
+    });
+
+    it('2. revealNodeOnMap directory from unrelated branch sets directory as map focus and expands it', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      useAppStore.getState().drillDownNode('d_src');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+
+      // Reveal server/database directory
+      useAppStore.getState().revealNodeOnMap('d_database');
+
+      const state = useAppStore.getState();
+      expect(state.selectedNodeId).toBe('d_database');
+      expect(state.mapFocusNodeId).toBe('d_database');
+      expect(state.page).toBe('graph');
+      expect(state.expandedNodeIds.has('d_server')).toBe(true);
+      expect(state.expandedNodeIds.has('d_database')).toBe(true);
+    });
+
+    it('3. revealNodeOnMap project root focuses and selects root on graph', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      useAppStore.getState().drillDownNode('d_src');
+      useAppStore.getState().setPage('analytics');
+
+      useAppStore.getState().revealNodeOnMap('root');
+
+      const state = useAppStore.getState();
+      expect(state.selectedNodeId).toBe('root');
+      expect(state.mapFocusNodeId).toBe('root');
+      expect(state.page).toBe('graph');
+    });
+
+    it('4. revealNodeOnMap records history snapshot', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      const initialHistoryLength = useAppStore.getState().navigationHistory.length;
+
+      useAppStore.getState().revealNodeOnMap('f_user_repo');
+
+      const history = useAppStore.getState().navigationHistory;
+      expect(history.length).toBe(initialHistoryLength + 1);
+      const latest = history[history.length - 1];
+      expect(latest.nodeId).toBe('f_user_repo');
+      expect(latest.mapFocusNodeId).toBe('d_database');
+      expect(latest.page).toBe('graph');
+    });
+
+    it('7. drillDownNode records map focus in history', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      useAppStore.getState().drillDownNode('d_src');
+
+      const history = useAppStore.getState().navigationHistory;
+      const latest = history[history.length - 1];
+      expect(latest.mapFocusNodeId).toBe('d_src');
+      expect(latest.nodeId).toBe('d_src');
+    });
+
+    it('8. breadcrumb navigation records map focus in history', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      useAppStore.getState().drillDownNode('d_src');
+      useAppStore.getState().drillDownNode('d_frontend');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_frontend');
+
+      // Click breadcrumb to focus back to root
+      useAppStore.getState().setMapFocusNodeId('root');
+
+      const history = useAppStore.getState().navigationHistory;
+      const latest = history[history.length - 1];
+      expect(latest.mapFocusNodeId).toBe('root');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('root');
+    });
+
+    it('9 & 10. Back and Forward restore mapFocusNodeId through drill, open, and back sequence', () => {
+      useAppStore.getState().setProject(multiBranchProject); // root focus
+      expect(useAppStore.getState().mapFocusNodeId).toBe('root');
+
+      // drill src
+      useAppStore.getState().drillDownNode('d_src');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+
+      // drill frontend
+      useAppStore.getState().drillDownNode('d_frontend');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_frontend');
+
+      // open Button.tsx (preview modal)
+      useAppStore.getState().openFileViewer('f_button');
+      expect(useAppStore.getState().previewFileId).toBe('f_button');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_frontend');
+
+      // Back -> restores d_frontend focus with viewer closed
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_frontend');
+      expect(useAppStore.getState().previewFileId).toBeNull();
+
+      // Back -> restores d_src focus
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+
+      // Back -> restores root focus
+      useAppStore.getState().navigateBack();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('root');
+
+      // Forward -> restores d_src focus
+      useAppStore.getState().navigateForward();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+
+      // Forward -> restores d_frontend focus
+      useAppStore.getState().navigateForward();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_frontend');
+    });
+
+    it('11 & 12. openFileViewer and closeFileViewer preserve current map focus', () => {
+      useAppStore.getState().setProject(multiBranchProject);
+      useAppStore.getState().drillDownNode('d_src');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+
+      useAppStore.getState().openFileViewer('f_button');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+      expect(useAppStore.getState().previewFileId).toBe('f_button');
+
+      useAppStore.getState().closeFileViewer();
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_src');
+      expect(useAppStore.getState().previewFileId).toBeNull();
+    });
+  });
 });
 

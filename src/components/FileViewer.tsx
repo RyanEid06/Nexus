@@ -23,6 +23,7 @@ export function FileViewer() {
   const closeFileViewer = useAppStore((s) => s.closeFileViewer);
   const selectNode = useAppStore((s) => s.selectNode);
   const setPage = useAppStore((s) => s.setPage);
+  const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const [data, setData] = useState<FilePreviewResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -218,9 +219,7 @@ export function FileViewer() {
 
   const handleShowOnMap = () => {
     if (!node) return;
-    selectNode(node.id);
-    setPage('graph');
-    closeFileViewer();
+    revealNodeOnMap(node.id);
   };
 
   const handleNavigateToNode = (targetId: string) => {

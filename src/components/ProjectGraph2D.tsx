@@ -7,7 +7,12 @@ import {
   Layers,
 } from 'lucide-react';
 import type { Node2DPosition } from '../services/layout';
-import { buildGraphIndex, computeGraphViewport, type ViewportOverflowNode } from '../services/graphViewport';
+import {
+  buildGraphIndex,
+  computeGraphViewport,
+  prioritizeDependencyEdges,
+  type ViewportOverflowNode,
+} from '../services/graphViewport';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor } from '../utils/fileTypes';
 
@@ -137,11 +142,34 @@ export function ProjectGraph2D({
     return list;
   }, [viewport, project]);
 
+  // Dynamically prioritized dependency edges (reprioritizes hovered node relationships without scanning project dependencies)
+  const { visibleDependencyEdges, visibleOutgoingByNodeId, visibleIncomingByNodeId } = useMemo(() => {
+    if (!viewport || !project) {
+      return {
+        visibleDependencyEdges: [],
+        visibleOutgoingByNodeId: new Map(),
+        visibleIncomingByNodeId: new Map(),
+      };
+    }
+    if (!hoveredNodeId) {
+      return {
+        visibleDependencyEdges: viewport.visibleDependencyEdges,
+        visibleOutgoingByNodeId: viewport.visibleOutgoingByNodeId,
+        visibleIncomingByNodeId: viewport.visibleIncomingByNodeId,
+      };
+    }
+    return prioritizeDependencyEdges(viewport.inScopeDependencyEdges, {
+      hoveredNodeId,
+      selectedNodeId: selectedId,
+      focusNodeId: viewport.focusNode.id,
+    });
+  }, [viewport, project, hoveredNodeId, selectedId]);
+
   const dependencyEdges = useMemo(() => {
     if (!viewport || !project) return [];
     const list: Array<{ id: string; sourceId: string; targetId: string; pathD: string }> = [];
 
-    for (const dep of viewport.visibleDependencyEdges) {
+    for (const dep of visibleDependencyEdges) {
       const sPos = viewport.positions2D.get(dep.sourceId);
       const tPos = viewport.positions2D.get(dep.targetId);
       if (sPos && tPos) {
@@ -158,12 +186,13 @@ export function ProjectGraph2D({
       }
     }
     return list;
-  }, [viewport, project]);
+  }, [viewport, project, visibleDependencyEdges]);
 
-  // Hover and selection relationship sets for visual highlighting (fast O(1) adjacency lookup)
+  // Hover and selection relationship sets for visual highlighting
+  // Strictly bounded over the <= 60 visible dependency relationships
   const activeHighlightedIds = useMemo(() => {
     const targetId = hoveredNodeId ?? selectedId;
-    if (!targetId || !viewport || !project || !graphIndex) return null;
+    if (!targetId || !viewport || !project) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -175,17 +204,17 @@ export function ProjectGraph2D({
       if (item.parentId === targetId) set.add(item.id);
     }
 
-    const outgoing = graphIndex.dependenciesBySourceId.get(targetId) ?? [];
+    const outgoing = visibleOutgoingByNodeId.get(targetId) ?? [];
     for (const item of outgoing) {
-      if (viewport.visibleNodesMap.has(item.targetId)) set.add(item.targetId);
+      set.add(item.targetId);
     }
-    const incoming = graphIndex.dependenciesByTargetId.get(targetId) ?? [];
+    const incoming = visibleIncomingByNodeId.get(targetId) ?? [];
     for (const item of incoming) {
-      if (viewport.visibleNodesMap.has(item.sourceId)) set.add(item.sourceId);
+      set.add(item.sourceId);
     }
 
     return set;
-  }, [hoveredNodeId, selectedId, viewport, project, graphIndex]);
+  }, [hoveredNodeId, selectedId, viewport, project, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
 
   // Mouse pan handlers
   const handleMouseDown = useCallback(

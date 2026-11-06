@@ -6,10 +6,10 @@ export type RelationshipFilterMode = 'hierarchy' | 'dependencies' | 'both';
 
 export interface HistoryEntry {
   nodeId: string | null;
-  mapFocusNodeId?: string | null;
+  mapFocusNodeId: string | null;
   page: AppPage;
   previewFileId: string | null;
-  mapMode?: MapMode;
+  mapMode: MapMode;
 }
 
 interface AppState {
@@ -29,9 +29,10 @@ interface AppState {
   setProject: (project: ProjectIndex) => void;
   clearProject: () => void;
   selectNode: (id: string | null, recordHistory?: boolean) => void;
-  setMapFocusNodeId: (id: string | null) => void;
+  setMapFocusNodeId: (id: string | null, recordHistory?: boolean) => void;
   drillDownNode: (id: string) => void;
   navigateUpToParentFocus: () => void;
+  revealNodeOnMap: (nodeId: string) => void;
   setMapMode: (mode: MapMode) => void;
   setRelationshipMode: (mode: RelationshipFilterMode) => void;
   toggleExpandNode: (id: string) => void;
@@ -46,6 +47,32 @@ interface AppState {
 }
 
 const MAX_HISTORY = 50;
+
+function pushHistoryEntry(
+  history: HistoryEntry[],
+  currentIndex: number,
+  newEntry: HistoryEntry
+): { navigationHistory: HistoryEntry[]; historyIndex: number } {
+  const currentHistory = history.slice(0, currentIndex + 1);
+  const lastEntry = currentHistory[currentHistory.length - 1];
+
+  if (
+    lastEntry &&
+    lastEntry.nodeId === newEntry.nodeId &&
+    lastEntry.mapFocusNodeId === newEntry.mapFocusNodeId &&
+    lastEntry.page === newEntry.page &&
+    lastEntry.previewFileId === newEntry.previewFileId &&
+    lastEntry.mapMode === newEntry.mapMode
+  ) {
+    return { navigationHistory: currentHistory, historyIndex: currentHistory.length - 1 };
+  }
+
+  const updatedHistory = [...currentHistory, newEntry].slice(-MAX_HISTORY);
+  return {
+    navigationHistory: updatedHistory,
+    historyIndex: updatedHistory.length - 1,
+  };
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   page: 'projects',
@@ -64,32 +91,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.page === page) return;
 
-    const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
-    const lastEntry = currentHistory[currentHistory.length - 1];
-
-    let newHistory = currentHistory;
-    if (
-      !lastEntry ||
-      lastEntry.page !== page ||
-      lastEntry.nodeId !== state.selectedNodeId ||
-      lastEntry.previewFileId !== state.previewFileId
-    ) {
-      newHistory = [
-        ...currentHistory,
-        {
-          nodeId: state.selectedNodeId,
-          mapFocusNodeId: state.mapFocusNodeId,
-          page,
-          previewFileId: state.previewFileId,
-          mapMode: state.mapMode,
-        },
-      ].slice(-MAX_HISTORY);
-    }
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
+      {
+        nodeId: state.selectedNodeId,
+        mapFocusNodeId: state.mapFocusNodeId,
+        page,
+        previewFileId: state.previewFileId,
+        mapMode: state.mapMode,
+      }
+    );
 
     set({
       page,
-      navigationHistory: newHistory,
-      historyIndex: newHistory.length - 1,
+      navigationHistory,
+      historyIndex,
     });
   },
 
@@ -133,8 +150,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       page: 'projects',
     }),
 
-  setMapFocusNodeId: (mapFocusNodeId) => {
-    set({ mapFocusNodeId });
+  setMapFocusNodeId: (mapFocusNodeId, recordHistory = true) => {
+    const state = get();
+    if (state.mapFocusNodeId === mapFocusNodeId) return;
+
+    if (recordHistory) {
+      const { navigationHistory, historyIndex } = pushHistoryEntry(
+        state.navigationHistory,
+        state.historyIndex,
+        {
+          nodeId: state.selectedNodeId,
+          mapFocusNodeId,
+          page: state.page,
+          previewFileId: state.previewFileId,
+          mapMode: state.mapMode,
+        }
+      );
+      set({ mapFocusNodeId, navigationHistory, historyIndex });
+    } else {
+      set({ mapFocusNodeId });
+    }
   },
 
   drillDownNode: (id) => {
@@ -145,13 +180,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (node.kind === 'directory' || node.kind === 'project') {
       const nextExpanded = new Set(state.expandedNodeIds);
       nextExpanded.add(id);
+
+      const { navigationHistory, historyIndex } = pushHistoryEntry(
+        state.navigationHistory,
+        state.historyIndex,
+        {
+          nodeId: id,
+          mapFocusNodeId: id,
+          page: state.page,
+          previewFileId: state.previewFileId,
+          mapMode: state.mapMode,
+        }
+      );
+
       set({
         mapFocusNodeId: id,
         selectedNodeId: id,
         expandedNodeIds: nextExpanded,
+        navigationHistory,
+        historyIndex,
       });
     } else {
-      set({ selectedNodeId: id });
+      state.selectNode(id, true);
     }
   },
 
@@ -160,11 +210,79 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!state.project || !state.mapFocusNodeId) return;
     const currentFocus = state.project.nodes.find((n) => n.id === state.mapFocusNodeId);
     if (currentFocus?.parentId) {
+      const parentId = currentFocus.parentId;
+      const { navigationHistory, historyIndex } = pushHistoryEntry(
+        state.navigationHistory,
+        state.historyIndex,
+        {
+          nodeId: parentId,
+          mapFocusNodeId: parentId,
+          page: state.page,
+          previewFileId: state.previewFileId,
+          mapMode: state.mapMode,
+        }
+      );
+
       set({
-        mapFocusNodeId: currentFocus.parentId,
-        selectedNodeId: currentFocus.parentId,
+        mapFocusNodeId: parentId,
+        selectedNodeId: parentId,
+        navigationHistory,
+        historyIndex,
       });
     }
+  },
+
+  revealNodeOnMap: (nodeId: string) => {
+    const state = get();
+    if (!state.project) return;
+    const node = state.project.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const rootId = state.project.nodes[0]?.id ?? null;
+    const nextExpanded = new Set(state.expandedNodeIds);
+
+    // Expand all ancestors leading to this node
+    let curr = node.parentId ? state.project.nodes.find((n) => n.id === node.parentId) : undefined;
+    while (curr) {
+      nextExpanded.add(curr.id);
+      curr = curr.parentId ? state.project.nodes.find((n) => n.id === curr.parentId) : undefined;
+    }
+
+    let targetFocusId: string;
+    if (node.kind === 'project') {
+      targetFocusId = node.id;
+    } else if (node.kind === 'directory') {
+      targetFocusId = node.id;
+      nextExpanded.add(node.id);
+    } else {
+      // file: parent directory is the map focus
+      targetFocusId = node.parentId ?? rootId ?? node.id;
+      if (node.parentId) {
+        nextExpanded.add(node.parentId);
+      }
+    }
+
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
+      {
+        nodeId: node.id,
+        mapFocusNodeId: targetFocusId,
+        page: 'graph',
+        previewFileId: null,
+        mapMode: state.mapMode,
+      }
+    );
+
+    set({
+      selectedNodeId: node.id,
+      mapFocusNodeId: targetFocusId,
+      page: 'graph',
+      previewFileId: null,
+      expandedNodeIds: nextExpanded,
+      navigationHistory,
+      historyIndex,
+    });
   },
 
   setInspectorCollapsed: (isInspectorCollapsed) => set({ isInspectorCollapsed }),
@@ -176,31 +294,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.selectedNodeId === selectedNodeId) return;
 
     if (recordHistory) {
-      const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
-      const lastEntry = currentHistory[currentHistory.length - 1];
-
-      let newHistory = currentHistory;
-      if (
-        !lastEntry ||
-        lastEntry.nodeId !== selectedNodeId ||
-        lastEntry.page !== state.page ||
-        lastEntry.previewFileId !== state.previewFileId
-      ) {
-        newHistory = [
-          ...currentHistory,
-          {
-            nodeId: selectedNodeId,
-            page: state.page,
-            previewFileId: state.previewFileId,
-            mapMode: state.mapMode,
-          },
-        ].slice(-MAX_HISTORY);
-      }
+      const { navigationHistory, historyIndex } = pushHistoryEntry(
+        state.navigationHistory,
+        state.historyIndex,
+        {
+          nodeId: selectedNodeId,
+          mapFocusNodeId: state.mapFocusNodeId,
+          page: state.page,
+          previewFileId: state.previewFileId,
+          mapMode: state.mapMode,
+        }
+      );
 
       set({
         selectedNodeId,
-        navigationHistory: newHistory,
-        historyIndex: newHistory.length - 1,
+        navigationHistory,
+        historyIndex,
       });
     } else {
       set({ selectedNodeId });
@@ -243,31 +352,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     const node = state.project?.nodes.find((n) => n.id === nodeId);
     if (!node || node.kind !== 'file') return;
 
-    const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
-    const lastEntry = currentHistory[currentHistory.length - 1];
-    let newHistory = currentHistory;
-    if (
-      !lastEntry ||
-      lastEntry.nodeId !== nodeId ||
-      lastEntry.previewFileId !== nodeId ||
-      lastEntry.page !== state.page
-    ) {
-      newHistory = [
-        ...currentHistory,
-        {
-          nodeId,
-          page: state.page,
-          previewFileId: nodeId,
-          mapMode: state.mapMode,
-        },
-      ].slice(-MAX_HISTORY);
-    }
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
+      {
+        nodeId,
+        mapFocusNodeId: state.mapFocusNodeId,
+        page: state.page,
+        previewFileId: nodeId,
+        mapMode: state.mapMode,
+      }
+    );
 
     set({
       previewFileId: nodeId,
       selectedNodeId: nodeId,
-      navigationHistory: newHistory,
-      historyIndex: newHistory.length - 1,
+      navigationHistory,
+      historyIndex,
     });
   },
 
@@ -275,21 +376,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (!state.previewFileId) return;
 
-    const currentHistory = state.navigationHistory.slice(0, state.historyIndex + 1);
-    const newHistory = [
-      ...currentHistory,
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
       {
         nodeId: state.selectedNodeId,
+        mapFocusNodeId: state.mapFocusNodeId,
         page: state.page,
         previewFileId: null,
         mapMode: state.mapMode,
-      },
-    ].slice(-MAX_HISTORY);
+      }
+    );
 
     set({
       previewFileId: null,
-      navigationHistory: newHistory,
-      historyIndex: newHistory.length - 1,
+      navigationHistory,
+      historyIndex,
     });
   },
 
@@ -302,10 +404,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
-          ...(entry.mapFocusNodeId !== undefined ? { mapFocusNodeId: entry.mapFocusNodeId } : {}),
+          mapFocusNodeId: entry.mapFocusNodeId,
           page: entry.page,
           previewFileId: entry.previewFileId,
-          ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),
+          mapMode: entry.mapMode,
         });
       }
     }
@@ -320,10 +422,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           historyIndex: nextIndex,
           selectedNodeId: entry.nodeId,
-          ...(entry.mapFocusNodeId !== undefined ? { mapFocusNodeId: entry.mapFocusNodeId } : {}),
+          mapFocusNodeId: entry.mapFocusNodeId,
           page: entry.page,
           previewFileId: entry.previewFileId,
-          ...(entry.mapMode ? { mapMode: entry.mapMode } : {}),
+          mapMode: entry.mapMode,
         });
       }
     }

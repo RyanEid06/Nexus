@@ -7,6 +7,7 @@ export function Sidebar() {
   const project = useAppStore((s) => s.project);
   const setPage = useAppStore((s) => s.setPage);
   const selectNode = useAppStore((s) => s.selectNode);
+  const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
   const allTopFolders = project?.nodes.filter(
     (node) => node.parentId === project.nodes[0]?.id && node.kind === 'directory'
@@ -33,8 +34,9 @@ export function Sidebar() {
           <button
             className="project-root-link"
             onClick={() => {
-              selectNode(project.nodes[0]?.id ?? null);
-              setPage('graph');
+              if (project.nodes[0]) {
+                revealNodeOnMap(project.nodes[0].id);
+              }
             }}
           >
             <Folder size={15} />
@@ -45,8 +47,7 @@ export function Sidebar() {
               key={node.id}
               className="tree-link"
               onClick={() => {
-                selectNode(node.id);
-                setPage('graph');
+                revealNodeOnMap(node.id);
               }}
             >
               <span className="tree-line" />
