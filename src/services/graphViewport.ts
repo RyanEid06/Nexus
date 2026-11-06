@@ -55,7 +55,6 @@ export interface GraphViewportModel {
   // Edges
   hierarchyEdges: ViewportHierarchyEdge[];
   visibleDependencyEdges: ViewportDependencyEdge[];
-  inScopeDependencyEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }>;
   visibleOutgoingByNodeId: Map<string, ViewportDependencyEdge[]>;
   visibleIncomingByNodeId: Map<string, ViewportDependencyEdge[]>;
 
@@ -781,7 +780,6 @@ export function computeGraphViewport({
 
   // Step 9: Adaptive Dependency Edges using Pre-indexed Dependency Adjacency
   // Iterates ONLY over the <= 72 visible nodes rather than all project-wide edges.
-  const inScopeEdges: Array<{ edge: DependencyEdge; sId: string; tId: string }> = [];
   const hoverDependencyCandidatesByNodeId = new Map<string, ViewportDependencyEdge[]>();
   const baseDependencyEdges: ViewportDependencyEdge[] = [];
   let visibleDependencyEdges: ViewportDependencyEdge[] = [];
@@ -798,13 +796,20 @@ export function computeGraphViewport({
       if (outgoing) {
         for (const item of outgoing) {
           if (visibleNodesMap.has(item.targetId)) {
-            inScopeEdges.push({ edge: item.edge, sId: vNode.id, tId: item.targetId });
+            totalDependenciesInScope += 1;
+            if (baseDependencyEdges.length < MAX_VISIBLE_DEPENDENCY_EDGES) {
+              baseDependencyEdges.push({
+                id: `dep-${item.edge.id}`,
+                sourceId: vNode.id,
+                targetId: item.targetId,
+                edge: item.edge,
+              });
+            }
           }
         }
       }
     }
 
-    totalDependenciesInScope = inScopeEdges.length;
     dependencyDensityCapped = totalDependenciesInScope > MAX_VISIBLE_DEPENDENCY_EDGES;
 
     // Precompute bounded candidate structures per visible node (each capped to MAX_VISIBLE_DEPENDENCY_EDGES = 60)
@@ -849,17 +854,6 @@ export function computeGraphViewport({
       hoverDependencyCandidatesByNodeId.set(vNode.id, candidates);
     }
 
-    // Precompute bounded deterministic fallback/base edge list (capped to MAX_VISIBLE_DEPENDENCY_EDGES = 60)
-    for (let i = 0; i < Math.min(inScopeEdges.length, MAX_VISIBLE_DEPENDENCY_EDGES); i++) {
-      const item = inScopeEdges[i];
-      baseDependencyEdges.push({
-        id: `dep-${item.edge.id}`,
-        sourceId: item.sId,
-        targetId: item.tId,
-        edge: item.edge,
-      });
-    }
-
     // Bounded hover processing over <=60 visible dependency relationships
     const depResult = resolveBoundedHoverDependencies(
       { hoverDependencyCandidatesByNodeId, baseDependencyEdges },
@@ -887,7 +881,6 @@ export function computeGraphViewport({
     positions2D,
     positions3D,
     hierarchyEdges,
-    inScopeDependencyEdges: inScopeEdges,
     visibleDependencyEdges,
     visibleOutgoingByNodeId,
     visibleIncomingByNodeId,

@@ -2,7 +2,12 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig({
+export default defineConfig(({ command }) => {
+  if (command === 'build') {
+    process.env.NODE_ENV = 'production';
+  }
+
+  return {
   plugins: [
     react(),
     VitePWA({
@@ -33,14 +38,9 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
     host: '0.0.0.0',
-    allowedHosts:
-      process.env.AIS_DEV_SERVER ||
-      process.env.GOOGLE_CLOUD_PROJECT ||
-      process.env.K_SERVICE ||
-      process.env.CLOUD_RUN_JOB
-        ? ['.run.app', '.aistudio.google', 'localhost', '127.0.0.1']
-        : ['localhost', '127.0.0.1'],
+    allowedHosts: true,
     hmr: process.env.DISABLE_HMR !== 'true',
     watch: process.env.DISABLE_HMR === 'true' ? null : {},
   },
+};
 });

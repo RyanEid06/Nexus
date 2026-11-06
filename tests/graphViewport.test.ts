@@ -526,10 +526,16 @@ describe('Graph Viewport & Spatial Budgeting', () => {
     expect(rootChildren?.length).toBe(50000);
 
     // Repeated buildGraphIndex returns the exact same cached object reference via WeakMap
+    const tCached0 = performance.now();
     const cachedIndex = buildGraphIndex(project);
+    const cachedDuration = performance.now() - tCached0;
     expect(cachedIndex).toBe(index);
 
-    expect(indexDuration).toBeGreaterThanOrEqual(0);
+    // Initial indexing of 50,000 items should complete well within 500ms on modern machines
+    // Catastrophic quadratic regression would take seconds
+    expect(indexDuration).toBeLessThan(500);
+    // Cached lookup is essentially instant (< 2ms)
+    expect(cachedDuration).toBeLessThan(2);
   });
 
   it('12.B. Repeated viewport computation reuses pre-sorted index without full sibling re-sorting', () => {
@@ -780,5 +786,62 @@ describe('Graph Viewport & Spatial Budgeting', () => {
     const sharedHsIndices = ids.map((id, idx) => (id === 'dep-shared_hs' ? idx : -1)).filter((idx) => idx !== -1);
     expect(sharedHsIndices.length).toBe(1);
     expect(sharedHsIndices[0]).toBeLessThan(26);
+  });
+
+  it('12.E. Full viewport construction benchmark for 30,000 in-scope dependencies without unbounded array allocation', () => {
+    const files: ProjectNode[] = Array.from({ length: 20 }, (_, i) =>
+      createMockNode({
+        id: `mod_${i}`,
+        parentId: 'root',
+        name: `mod_${String(i).padStart(2, '0')}.ts`,
+        kind: 'file',
+        path: `mod_${String(i).padStart(2, '0')}.ts`,
+        loc: 100,
+        depth: 1,
+      })
+    );
+
+    const edges: DependencyEdge[] = [];
+    for (let i = 0; i < 30000; i++) {
+      const targetIdx = (i % 19) + 1;
+      edges.push({
+        id: `dep_edge_${i}`,
+        sourceId: 'mod_0',
+        targetId: `mod_${targetIdx}`,
+        sourcePath: 'mod_00.ts',
+        targetPath: `mod_${String(targetIdx).padStart(2, '0')}.ts`,
+        targetResolvedPath: `mod_${String(targetIdx).padStart(2, '0')}.ts`,
+        specifier: `./mod_${String(targetIdx).padStart(2, '0')}`,
+        type: 'static-import',
+        isResolved: true,
+        isExternal: false,
+      });
+    }
+
+    const project = createMockProject(files, edges);
+    const index = buildGraphIndex(project);
+
+    const t0 = performance.now();
+    const viewport = computeGraphViewport({
+      project,
+      graphIndex: index,
+      mapFocusNodeId: 'root',
+      selectedNodeId: null,
+      expandedNodeIds: new Set(),
+      relationshipMode: 'dependencies',
+    });
+    const duration = performance.now() - t0;
+
+    // Correctness assertions
+    expect(viewport.totalDependenciesInScope).toBe(30000);
+    expect(viewport.dependencyDensityCapped).toBe(true);
+    expect(viewport.visibleDependencyEdges.length).toBe(MAX_VISIBLE_DEPENDENCY_EDGES);
+    expect(viewport.baseDependencyEdges.length).toBe(MAX_VISIBLE_DEPENDENCY_EDGES);
+
+    // Verify inScopeDependencyEdges is no longer materialized or returned
+    expect((viewport as unknown as Record<string, unknown>).inScopeDependencyEdges).toBeUndefined();
+
+    // Viewport construction over 30,000 edges without unbounded allocation completes in < 35ms
+    expect(duration).toBeLessThan(35);
   });
 });
