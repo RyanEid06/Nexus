@@ -13,7 +13,7 @@ import { ProjectGraph2D } from './ProjectGraph2D';
 import { WorkspaceTabs } from './WorkspaceTabs';
 import { FileViewer } from './FileViewer';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
-import { computeGraphViewport } from '../services/graphViewport';
+import { buildGraphIndex, computeGraphViewport } from '../services/graphViewport';
 
 export function GraphPage() {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -112,17 +112,20 @@ export function GraphPage() {
     );
   };
 
+  const graphIndex = useMemo(() => (project ? buildGraphIndex(project) : null), [project]);
+
   // Viewport metrics and breadcrumbs
   const viewport = useMemo(() => {
     if (!project) return null;
     return computeGraphViewport({
       project,
+      graphIndex: graphIndex ?? undefined,
       mapFocusNodeId,
       selectedNodeId,
       expandedNodeIds,
       relationshipMode,
     });
-  }, [project, mapFocusNodeId, selectedNodeId, expandedNodeIds, relationshipMode]);
+  }, [project, graphIndex, mapFocusNodeId, selectedNodeId, expandedNodeIds, relationshipMode]);
 
   return (
     <main className={`workspace ${isInspectorCollapsed ? 'inspector-collapsed' : ''}`}>

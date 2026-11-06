@@ -1730,6 +1730,9 @@
   max-width: calc(100% - 340px);
   pointer-events: none;
 }
+.workspace.inspector-collapsed .map-header-controls {
+  max-width: calc(100% - 70px);
+}
 
 .map-filter-row {
   display: flex;
@@ -1803,6 +1806,10 @@
   border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: all 0.15s ease;
 }
 .map-breadcrumb-btn:hover {
@@ -1816,6 +1823,10 @@
   padding: 3px 6px;
   border-radius: 4px;
   background: rgba(139, 92, 246, 0.2);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .map-breadcrumb-sep {
   color: #4B5563;

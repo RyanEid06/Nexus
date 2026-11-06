@@ -37,10 +37,9 @@ export default defineConfig({
       process.env.AIS_DEV_SERVER ||
       process.env.GOOGLE_CLOUD_PROJECT ||
       process.env.K_SERVICE ||
-      process.env.CLOUD_RUN_JOB ||
-      process.env.DISABLE_HMR === 'true'
-        ? true
-        : ['localhost', '127.0.0.1', '.run.app'],
+      process.env.CLOUD_RUN_JOB
+        ? ['.run.app', '.aistudio.google', 'localhost', '127.0.0.1']
+        : ['localhost', '127.0.0.1'],
     hmr: process.env.DISABLE_HMR !== 'true',
     watch: process.env.DISABLE_HMR === 'true' ? null : {},
   },

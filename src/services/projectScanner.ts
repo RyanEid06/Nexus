@@ -332,6 +332,8 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
       });
     }
 
+    let lastPercentage = 0;
+
     for (let i = 0; i < totalFilesToProcess; i += 1) {
       ensureNotAborted(options.signal);
       const { entry, path, parentId, depth } = fileWorkItems[i];
@@ -423,6 +425,10 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
         processedFiles += 1;
       }
 
+      const rawPct = Math.floor((processedFiles / Math.max(1, totalFilesToProcess)) * 100);
+      const currentPct = processedFiles === totalFilesToProcess ? 100 : Math.min(99, rawPct);
+      lastPercentage = Math.max(lastPercentage, currentPct);
+
       scheduler.update({
         phase: 'analyzing',
         discovered,
@@ -433,7 +439,7 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
         reused,
         warnings: warnings.length,
         currentPath: path,
-        percentage: Math.min(100, Math.round((processedFiles / Math.max(1, totalFilesToProcess)) * 100)),
+        percentage: lastPercentage,
       });
 
       if (i % 32 === 0) await yieldToBrowser();
@@ -441,6 +447,20 @@ export async function scanDirectoryHandle(handle: LocalDirectoryHandle, options:
 
     // Flush any remaining files in batch and flush progress to ensure 100% analyzing is emitted
     await flushPendingBatch();
+    if (totalFilesToProcess > 0) {
+      scheduler.update({
+        phase: 'analyzing',
+        discovered,
+        totalFilesToProcess,
+        totalToAnalyze: totalFilesToProcess,
+        processedFiles: totalFilesToProcess,
+        analyzed,
+        reused,
+        warnings: warnings.length,
+        currentPath: 'File analysis complete',
+        percentage: 100,
+      });
+    }
     scheduler.flush();
     ensureNotAborted(options.signal);
 

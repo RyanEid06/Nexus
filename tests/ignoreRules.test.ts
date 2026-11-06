@@ -3,6 +3,8 @@ import { DEFAULT_IGNORED_DIRECTORIES, DEFAULT_IGNORED_FILES, normalizeExclusionP
 
 describe('ignoreRules & exclusion path semantics', () => {
   it('skips generated dependency and build directories', () => {
+    expect(DEFAULT_IGNORED_DIRECTORIES.has('node_modules')).toBe(true);
+    expect(DEFAULT_IGNORED_FILES.has('.DS_Store')).toBe(true);
     expect(shouldIgnoreEntry('node_modules', 'directory')).toBe(true);
     expect(shouldIgnoreEntry('.git', 'directory')).toBe(true);
     expect(shouldIgnoreEntry('build', 'directory')).toBe(true);

@@ -16,6 +16,7 @@ describe('JSONC Parser', () => {
     const parsed = parseJsonc<{ url: string; glob: string }>(jsonc);
     expect(parsed.url).toBe('https://example.com/api/test');
     expect(parsed.glob).toBe('src/*');
+    expect(stripJsonc(jsonc)).toContain('"url": "https://example.com/api/test"');
   });
 
   it('strips trailing commas in objects and arrays safely', () => {

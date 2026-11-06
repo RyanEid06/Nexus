@@ -6,7 +6,7 @@ import {
   RootAccessError,
   ScanLimitError,
 } from '../src/services/projectScanner';
-import type { AnalysisCategory, ProjectIndex, ProjectNode } from '../src/domain/models';
+import type { AnalysisCategory, ProjectIndex } from '../src/domain/models';
 
 function createMockFile(name: string, content: string, size = content.length, modified = 1000): LocalFileHandle {
   const textSpy = vi.fn().mockResolvedValue(content);
@@ -381,5 +381,67 @@ describe('scanDirectoryHandle', () => {
     expect(refreshedNode?.rawSpecifiers).toBeDefined();
     expect(refreshedNode?.rawSpecifiers?.length).toBe(1);
     expect(refreshed.dependencies?.edges.length).toBe(1);
+  });
+
+  it('throws ScanLimitError when discovered entries reach maxEntries', async () => {
+    const files = [
+      createMockFile('f1.ts', 'const a = 1;'),
+      createMockFile('f2.ts', 'const b = 2;'),
+      createMockFile('f3.ts', 'const c = 3;'),
+    ];
+    const dir = createMockDirectory('limit-test', files);
+
+    await expect(scanDirectoryHandle(dir, { maxEntries: 2 })).rejects.toThrow(ScanLimitError);
+  });
+
+  it('respects nested custom exclusion paths and basename exclusions during traversal', async () => {
+    const dataCacheFile = createMockFile('cache.json', '{}');
+    const dataDir = createMockDirectory('data', [dataCacheFile]);
+    const tempDir = createMockDirectory('temp', [dataDir]);
+
+    const generatedFile = createMockFile('deep.ts', 'export const deep = 1;');
+    const generatedDir = createMockDirectory('generated', [generatedFile]);
+    const legacyDir = createMockDirectory('legacy', [generatedDir]);
+    const packagesDir = createMockDirectory('packages', [legacyDir]);
+
+    const fixturesFile = createMockFile('mock.json', '{}');
+    const fixturesDir = createMockDirectory('fixtures', [fixturesFile]);
+
+    const appDataFile = createMockFile('state.json', '{}');
+    const appDataDir = createMockDirectory('data', [appDataFile]);
+    const appDir = createMockDirectory('app', [appDataDir]);
+
+    const rootDir = createMockDirectory('exclusion-test', [
+      tempDir,
+      packagesDir,
+      fixturesDir,
+      appDir,
+    ]);
+
+    const result = await scanDirectoryHandle(rootDir, {
+      customExclusions: ['temp/data', 'packages/legacy/generated', 'fixtures'],
+    });
+
+    const paths = result.nodes.map((n) => n.path);
+
+    // Exact project-relative nested path "temp/data" is excluded
+    expect(paths).toContain('temp');
+    expect(paths).not.toContain('temp/data');
+    expect(paths).not.toContain('temp/data/cache.json');
+
+    // Nested path "packages/legacy/generated" is excluded
+    expect(paths).toContain('packages');
+    expect(paths).toContain('packages/legacy');
+    expect(paths).not.toContain('packages/legacy/generated');
+    expect(paths).not.toContain('packages/legacy/generated/deep.ts');
+
+    // Basename "fixtures" anywhere is excluded
+    expect(paths).not.toContain('fixtures');
+    expect(paths).not.toContain('fixtures/mock.json');
+
+    // "app/data" is NOT excluded because only "temp/data" was specified
+    expect(paths).toContain('app');
+    expect(paths).toContain('app/data');
+    expect(paths).toContain('app/data/state.json');
   });
 });
