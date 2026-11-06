@@ -16,7 +16,7 @@ import {
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { getDirectoryColor } from '../utils/fileTypes';
 
-// Deterministic sparse starfield (GEMINI.md Section 14)
+// Deterministic sparse starfield
 const STAR_COUNT = 90;
 const DETERMINISTIC_STARS = Array.from({ length: STAR_COUNT }, (_, i) => {
   const seed = (i + 1) * 9301 + 49297;

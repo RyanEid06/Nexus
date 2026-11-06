@@ -150,7 +150,7 @@ describe('File Preview Service', () => {
     );
   });
 
-  it('rejects uncurated demo files rather than fabricating fake source (GEMINI.md Section 16)', async () => {
+  it('rejects uncurated demo files rather than fabricating fake source', async () => {
     const uncuratedDemoNode: ProjectNode = {
       id: 'unreal-demo-file',
       projectId: 'demo-atlas',

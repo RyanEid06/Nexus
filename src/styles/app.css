@@ -1096,7 +1096,7 @@
   margin-left: 6px;
 }
 
-/* File Viewer Dependency Navigation Shortcuts (GEMINI.md Section 15) */
+/* File Viewer Dependency Navigation Shortcuts */
 .file-dep-shortcuts {
   display: flex;
   gap: 4px;

@@ -126,7 +126,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       project,
       page: 'graph',
-      mapMode: '2d', // GEMINI.md Section 10: New/opened projects strictly default to 2D
+      mapMode: '2d', // New/opened projects strictly default to 2D
       selectedNodeId: rootId,
       mapFocusNodeId: rootId,
       previewFileId: null,

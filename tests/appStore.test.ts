@@ -122,7 +122,7 @@ describe('App Store & Graph State', () => {
     expect(useAppStore.getState().previewFileId).toBeNull();
   });
 
-  it('strictly defaults to 2D when opening a new project even if previous project was in 3D (GEMINI.md Section 10)', () => {
+  it('strictly defaults to 2D when opening a new project even if previous project was in 3D', () => {
     // Project 1
     useAppStore.getState().setProject(mockProject);
     useAppStore.getState().setMapMode('3d');
@@ -140,7 +140,7 @@ describe('App Store & Graph State', () => {
     expect(useAppStore.getState().mapMode).toBe('2d');
   });
 
-  it('restores full exploration context: page, file viewer, and selection on Back/Forward (GEMINI.md Section 9)', () => {
+  it('restores full exploration context: page, file viewer, and selection on Back/Forward', () => {
     useAppStore.getState().setProject(mockProject);
     expect(useAppStore.getState().page).toBe('graph');
     expect(useAppStore.getState().selectedNodeId).toBe('root');

@@ -49,7 +49,7 @@ export function FileViewer() {
 
   const isMarkdown = node?.extension?.toLowerCase() === 'md' || node?.name.toLowerCase().endsWith('.md');
 
-  // Compute resolved Imports and Imported By relationships (GEMINI.md Section 15)
+  // Compute resolved Imports and Imported By relationships
   const { importedFiles, importedByFiles } = useMemo(() => {
     if (!project || !node) return { importedFiles: [], importedByFiles: [] };
 
@@ -83,7 +83,7 @@ export function FileViewer() {
     return { importedFiles: imports, importedByFiles: importedBy };
   }, [project, node]);
 
-  // Save opener element on mount and restore on unmount (GEMINI.md Section 19)
+  // Save opener element on mount and restore on unmount
   useEffect(() => {
     openerRef.current = document.activeElement as HTMLElement | null;
     return () => {
@@ -253,7 +253,7 @@ export function FileViewer() {
           </div>
 
           <div className="file-actions-group">
-            {/* Dependency Navigation Shortcuts (GEMINI.md Section 15) */}
+            {/* Dependency Navigation Shortcuts */}
             <div className="file-dep-shortcuts">
               <button
                 className={`dep-nav-btn ${activeDepDrawer === 'imports' ? 'active' : ''}`}

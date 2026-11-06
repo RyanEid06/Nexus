@@ -286,7 +286,7 @@ function ancestorIds(byId: Map<string, ProjectNode>, node: ProjectNode): string[
 
 /**
  * Computes visible nodes for graph rendering.
- * Strict rules (GEMINI.md Section 7):
+ * Strict rules:
  * - Project root is always visible
  * - Top-level nodes (depth <= 1) are always visible
  * - Descendants are visible ONLY if their direct parent branch is expanded

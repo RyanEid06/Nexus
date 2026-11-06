@@ -303,7 +303,7 @@ export async function readProjectFile(
         isTruncated: false,
       };
     }
-    // GEMINI.md Section 16: Never fabricate synthetic source code for uncurated demo files
+    // Never fabricate synthetic source code for uncurated demo files
     throw new FilePreviewError(
       `Demo source content is not available for "${node.name}". Only curated demo files are previewable in offline demo mode.`,
       'FILE_NOT_FOUND'

@@ -197,7 +197,7 @@ describe('Layout Engine', () => {
     });
   });
 
-  describe('Collapse Semantics & Large-Project Scalability (GEMINI.md Sections 6 & 7)', () => {
+  describe('Collapse Semantics & Large-Project Scalability', () => {
     it('strictly keeps collapsed folder children hidden even when spare capacity exists', () => {
       const nodes: ProjectNode[] = [
         { id: 'root', projectId: 'p', parentId: null, name: 'root', path: 'root', kind: 'project', sizeBytes: 0, loc: 0, depth: 0 },
