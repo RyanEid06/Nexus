@@ -19,6 +19,9 @@ import { FileViewer } from './FileViewer';
 
 export function AnalyticsPage() {
   const project = useAppStore((s) => s.project);
+  const workspaceProjects = useAppStore((s) => s.workspaceProjects);
+  const switchProject = useAppStore((s) => s.switchProject);
+  const setConstellationMode = useAppStore((s) => s.setConstellationMode);
   const selectNode = useAppStore((s) => s.selectNode);
   const setPage = useAppStore((s) => s.setPage);
   const openFileViewer = useAppStore((s) => s.openFileViewer);
@@ -188,6 +191,65 @@ export function AnalyticsPage() {
                 Open Dependencies Explorer →
               </button>
             </article>
+          </section>
+        )}
+
+        {workspaceProjects.length >= 2 && (
+          <section className="panel comparison-matrix-panel" style={{ marginTop: '18px' }}>
+            <div className="comparison-matrix-head">
+              <div>
+                <h2>Workspace Architecture Comparison</h2>
+                <small>Side-by-side volumetric &amp; coupling telemetry across {workspaceProjects.length} active repositories</small>
+              </div>
+              <button
+                className="action-btn highlight"
+                onClick={() => setConstellationMode(true)}
+              >
+                Open Constellation Map →
+              </button>
+            </div>
+            <div className="comparison-table-wrap">
+              <table className="comparison-table tabular-nums">
+                <thead>
+                  <tr>
+                    <th>Repository</th>
+                    <th>Files</th>
+                    <th>LOC</th>
+                    <th>Internal Edges</th>
+                    <th>Coupling (Edge/File)</th>
+                    <th>Cycles</th>
+                    <th>Primary Language</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workspaceProjects.map((wp) => {
+                    const isCurrent = wp.id === project.id;
+                    const edgesCount = wp.metrics.dependencyEdges ?? 0;
+                    const coupling = wp.metrics.files > 0 ? (edgesCount / wp.metrics.files).toFixed(2) : '0.00';
+                    const cycles = wp.metrics.circularDependenciesCount ?? wp.dependencies?.circularDependencies.length ?? 0;
+                    const topLang = wp.metrics.languages[0]?.language ?? 'Mixed';
+                    return (
+                      <tr
+                        key={wp.id}
+                        className={isCurrent ? 'active-row' : ''}
+                        onClick={() => switchProject(wp.id, 'analytics')}
+                      >
+                        <td>
+                          <b>{wp.name}</b>
+                          {isCurrent && <span className="inline-active-mark">active</span>}
+                        </td>
+                        <td>{wp.metrics.files.toLocaleString()}</td>
+                        <td>{wp.metrics.totalLoc.toLocaleString()}</td>
+                        <td>{edgesCount.toLocaleString()}</td>
+                        <td>{coupling}</td>
+                        <td className={cycles > 0 ? 'cycle-warn-cell' : ''}>{cycles}</td>
+                        <td>{topLang}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 

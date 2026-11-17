@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, Box, CheckCircle2, FolderOpen, AlertTriangle, Plus, RefreshCw, Trash2, Unplug } from 'lucide-react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Boxes,
+  Check,
+  CheckCircle2,
+  FolderOpen,
+  GitBranch,
+  Layers,
+  Orbit,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Unplug,
+} from 'lucide-react';
 import { SCANNER_ANALYSIS_VERSION, type ProjectIndex } from '../domain/models';
 import { demoProject } from '../data/demoProject';
+import { CURATED_SAMPLE_PROJECTS } from '../data/sampleProjects';
 import {
   getProjectHandle,
   getProjectHandleStatus,
@@ -23,11 +38,11 @@ type ProjectCard = Omit<ProjectIndex, 'nodes'>;
 function relativeTime(timestamp: number): string {
   const delta = Math.max(0, Date.now() - timestamp);
   const minutes = Math.floor(delta / 60_000);
-  if (minutes < 1) return 'Updated just now';
-  if (minutes < 60) return `Updated ${minutes}m ago`;
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Updated ${hours}h ago`;
-  return `Updated ${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function ProjectsPage() {
@@ -37,8 +52,14 @@ export function ProjectsPage() {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [stalePromptId, setStalePromptId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [selectedLocalIds, setSelectedLocalIds] = useState<Set<string>>(new Set());
+  const [selectedSampleIds, setSelectedSampleIds] = useState<Set<string>>(
+    () => new Set(CURATED_SAMPLE_PROJECTS.map((p) => p.id))
+  );
   const [loadError, setLoadError] = useState('');
+
   const setProject = useAppStore((s) => s.setProject);
+  const launchConstellation = useAppStore((s) => s.launchConstellation);
   const currentProject = useAppStore((s) => s.project);
   const browserSupported = supportsLocalDirectoryPicker();
 
@@ -48,7 +69,6 @@ export function ProjectsPage() {
       setProjects(list);
       setLoadError('');
 
-      // Query connection statuses concurrently
       const statusMap: Record<string, HandleConnectionStatus> = {};
       await Promise.all(
         list.map(async (p) => {
@@ -87,6 +107,46 @@ export function ProjectsPage() {
     }
   }
 
+  function toggleLocalSelection(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setSelectedLocalIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSampleSelection(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setSelectedSampleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleLaunchSelectedConstellation() {
+    setLoadError('');
+    try {
+      const loadedLocals = await Promise.all(
+        Array.from(selectedLocalIds).map((id) => loadProject(id))
+      );
+      const validLocals = loadedLocals.filter((p): p is ProjectIndex => Boolean(p));
+      const samples = CURATED_SAMPLE_PROJECTS.filter((p) => selectedSampleIds.has(p.id));
+      const combined = [...validLocals, ...samples];
+
+      if (combined.length >= 2) {
+        launchConstellation(combined, combined[0].id);
+      } else {
+        launchConstellation(CURATED_SAMPLE_PROJECTS, demoProject.id);
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load selected projects.');
+    }
+  }
+
   async function handleRefreshOrReconnect(id: string, e: React.MouseEvent) {
     e.stopPropagation();
     const status = statuses[id];
@@ -104,7 +164,7 @@ export function ProjectsPage() {
 
       const handle = await getProjectHandle(id);
       if (!handle) {
-        setLoadError('Folder handle is no longer accessible. Use "Relocate Folder" to re-link.');
+        setLoadError('Folder handle is no longer accessible. Use "Relocate" to re-link.');
         return;
       }
 
@@ -137,13 +197,8 @@ export function ProjectsPage() {
       }
 
       const newHandle = await pickLocalProjectDirectory();
-      // Safely inspect candidate handle before mutating database
       await validateRelocationCandidate(prevProject, newHandle);
-
-      // Perform scan with previous project data for continuity
       const updated = await scanDirectoryHandle(newHandle, { previousProject: prevProject });
-
-      // Only save project and attach handle after successful validation and scan!
       await saveProject(updated, newHandle);
 
       if (currentProject?.id === id) {
@@ -164,34 +219,72 @@ export function ProjectsPage() {
       setLoadError('');
       await removeProject(id);
       setDeleteConfirmId(null);
+      setSelectedLocalIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       await refreshList();
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Failed to remove project.');
     }
   }
 
+  const totalChecked = selectedLocalIds.size + selectedSampleIds.size;
+
   return (
     <main className="page projects-page">
       <header className="hero">
-        <img src="/nexus-mark.svg" alt="NEXUS" />
-        <h1>NEXUS</h1>
-        <p>Visualize. Explore. Understand your code.</p>
-        <small>
-          Turn a local software project into an interactive architectural map. Direct local-first access, client-only analysis, and zero cloud uploads.
-        </small>
-        <div>
-          <button
-            className="primary"
-            onClick={() => setImporting(true)}
-            disabled={!browserSupported}
-            title={browserSupported ? 'Select a local directory' : 'Requires a supported Chromium desktop browser'}
-          >
-            <FolderOpen size={17} />
-            Open Local Project
-          </button>
-          <button className="ghost" onClick={() => setProject(demoProject)}>
-            Open Curated Demo
-          </button>
+        <div className="hero-top">
+          <div className="hero-brand-lockup">
+            <img src="/nexus-mark.svg" alt="NEXUS" />
+            <div>
+              <span className="hero-eyebrow">ARCHITECTURAL OBSERVATORY</span>
+              <h1>NEXUS</h1>
+            </div>
+          </div>
+
+          <div className="hero-cta-group">
+            <button
+              className="primary"
+              onClick={() => setImporting(true)}
+              disabled={!browserSupported}
+              title={browserSupported ? 'Select a local directory' : 'Requires a supported Chromium desktop browser'}
+            >
+              <FolderOpen size={16} />
+              Open Local Folder
+            </button>
+            <button
+              className="secondary-cyan"
+              onClick={() => void handleLaunchSelectedConstellation()}
+              title="Open Multi-Project Constellation in 2D and 3D"
+            >
+              <Orbit size={16} />
+              Launch Multi-Project Constellation
+            </button>
+            <button className="ghost" onClick={() => setProject(demoProject)}>
+              Explore Atlas Demo
+            </button>
+          </div>
+        </div>
+
+        <p className="hero-lead">
+          Spatial 2D &amp; 3D topology, lexically resolved import graphs, and multi-repository constellation comparison. Runs entirely client-side with zero uploads.
+        </p>
+
+        <div className="hero-pillars">
+          <div>
+            <Layers size={15} />
+            <span>Precision 2D Blueprint &amp; 3D WebGL CAD Topology</span>
+          </div>
+          <div>
+            <Boxes size={15} />
+            <span>Multi-Project Orbital Constellation &amp; Shared Dependency Bridges</span>
+          </div>
+          <div>
+            <GitBranch size={15} />
+            <span>Tarjan Cycle Detection, Fan-In/Out &amp; BFS Shortest Paths</span>
+          </div>
         </div>
       </header>
 
@@ -199,43 +292,40 @@ export function ProjectsPage() {
         <div className="browser-banner" role="alert">
           <AlertCircle size={18} />
           <div>
-            <b>Local Directory Access Unavailable in this Browser</b>
+            <b>Local Directory Picker Unavailable</b>
             <p>
-              Direct folder opening via the File System Access API requires a supported desktop Chromium browser (Google Chrome, Microsoft Edge, Brave, Opera). You can still explore the preloaded Curated Demo or inspect cached project indexes.
+              Direct folder access uses the File System Access API (Chrome, Edge, Brave, Opera). You can still explore all curated sample architectures and multi-project constellations below.
             </p>
           </div>
         </div>
       )}
 
-      <section className="feature-row">
-        <div>
-          <Box /> <b>3D Structure</b>
-          <span>Explore repository hierarchy and module layout spatially.</span>
-        </div>
-        <div>
-          <Box /> <b>Project Insights</b>
-          <span>Accurate lines of code, language breakdown, and safety limits.</span>
-        </div>
-        <div>
-          <Box /> <b>Real Dependencies</b>
-          <span>Lexically parsed imports, circular cycle detection, and BFS paths.</span>
-        </div>
-      </section>
-
-      <div className="section-heading">
-        <h2>Your Projects</h2>
-        <button
-          className="primary small"
-          onClick={() => setImporting(true)}
-          disabled={!browserSupported}
-          title={browserSupported ? 'Open a project' : 'Requires Chromium desktop'}
-        >
-          <Plus size={15} />
-          Open Project
-        </button>
-      </div>
-
       {loadError && <div className="error-box" role="alert">{loadError}</div>}
+
+      {/* Local Projects Section */}
+      <div className="section-heading">
+        <div>
+          <h2>Local Repositories</h2>
+          <small className="section-sub">Indexed directly on disk via File System Access</small>
+        </div>
+        <div className="section-actions">
+          {selectedLocalIds.size >= 2 && (
+            <button className="secondary-cyan small" onClick={() => void handleLaunchSelectedConstellation()}>
+              <Orbit size={14} />
+              Constellate Selected ({selectedLocalIds.size})
+            </button>
+          )}
+          <button
+            className="primary small"
+            onClick={() => setImporting(true)}
+            disabled={!browserSupported}
+            title={browserSupported ? 'Open a local folder' : 'Requires Chromium desktop'}
+          >
+            <Plus size={14} />
+            Add Folder
+          </button>
+        </div>
+      </div>
 
       <section className="project-cards">
         {projects.map((project) => {
@@ -244,9 +334,20 @@ export function ProjectsPage() {
           const isPendingDelete = deleteConfirmId === project.id;
           const isStale = (project.analysisConfig?.scannerAnalysisVersion ?? 0) < SCANNER_ANALYSIS_VERSION;
           const isPendingStale = stalePromptId === project.id;
+          const isChecked = selectedLocalIds.has(project.id);
 
           return (
-            <article className="project-card" key={project.id}>
+            <article className={`project-card ${isChecked ? 'checked' : ''}`} key={project.id}>
+              <button
+                className={`card-select-toggle ${isChecked ? 'checked' : ''}`}
+                onClick={(e) => toggleLocalSelection(project.id, e)}
+                title="Select for Multi-Project Constellation"
+                aria-label={`Select ${project.name} for constellation`}
+                aria-pressed={isChecked}
+              >
+                {isChecked && <Check size={12} />}
+              </button>
+
               <button
                 className="project-card-open"
                 onClick={() => void openProject(project.id)}
@@ -254,36 +355,31 @@ export function ProjectsPage() {
               >
                 <div className="project-card-top">
                   <span className="project-icon">
-                    <Box />
+                    <FolderOpen size={17} />
                   </span>
-                  <div className="status-badges">
+                  <div className="status-tag-line">
                     {isStale && status === 'connected' && (
-                      <span className="card-badge index-needs-refresh" title="Project was indexed with an older analysis version; refresh recommended">
-                        <RefreshCw size={10} /> Index needs refresh
+                      <span className="status-tag warning">
+                        <RefreshCw size={10} /> Refresh recommended
                       </span>
                     )}
-                    {isStale && status === 'permission-required' && (
-                      <span className="card-badge index-needs-refresh" title="Permission required to refresh outdated index">
-                        <RefreshCw size={10} /> Index needs refresh — reconnect to update
-                      </span>
-                    )}
-                    {isStale && status === 'unavailable' && (
-                      <span className="card-badge outdated" title="Viewing outdated cached index">
-                        <AlertTriangle size={10} /> Viewing outdated cached index
+                    {isStale && status !== 'connected' && (
+                      <span className="status-tag warning">
+                        <AlertTriangle size={10} /> Outdated cache
                       </span>
                     )}
                     {!isStale && status === 'connected' && (
-                      <span className="card-badge connected" title="Direct folder access active">
+                      <span className="status-tag connected">
                         <CheckCircle2 size={10} /> Connected
                       </span>
                     )}
                     {!isStale && status === 'permission-required' && (
-                      <span className="card-badge permission" title="Permission required to rescan">
-                        <AlertTriangle size={10} /> Reconnect needed
+                      <span className="status-tag warning">
+                        <AlertTriangle size={10} /> Reconnect
                       </span>
                     )}
                     {!isStale && status === 'unavailable' && (
-                      <span className="card-badge unavailable" title="Folder handle disconnected or unavailable">
+                      <span className="status-tag muted">
                         <Unplug size={10} /> Disconnected
                       </span>
                     )}
@@ -291,11 +387,10 @@ export function ProjectsPage() {
                 </div>
 
                 <h3>{project.name}</h3>
-                <p>
-                  {project.metrics.files.toLocaleString()} files · {project.metrics.totalLoc.toLocaleString()} lines · {compactBytes(project.metrics.indexedBytes)}
-                  {project.metrics.dependencyEdges ? ` · ${project.metrics.dependencyEdges.toLocaleString()} edges` : ''}
+                <p className="tabular-nums">
+                  {project.metrics.files.toLocaleString()} files · {project.metrics.totalLoc.toLocaleString()} loc · {compactBytes(project.metrics.indexedBytes)}
                 </p>
-                <small>{relativeTime(project.updatedAt)}</small>
+                <small>Updated {relativeTime(project.updatedAt)}</small>
               </button>
 
               <div className="project-card-footer">
@@ -305,10 +400,9 @@ export function ProjectsPage() {
                       className={`action-btn ${isStale ? 'highlight' : ''}`}
                       onClick={(e) => void handleRefreshOrReconnect(project.id, e)}
                       disabled={isRefreshing}
-                      title="Run incremental refresh for new, modified, or deleted files"
                     >
                       <RefreshCw size={11} className={isRefreshing ? 'spin' : ''} />
-                      {isRefreshing ? 'Refreshing...' : isStale ? 'Refresh Index' : 'Refresh'}
+                      {isRefreshing ? 'Refreshing…' : isStale ? 'Refresh Index' : 'Refresh'}
                     </button>
                   )}
                   {status === 'permission-required' && (
@@ -316,10 +410,9 @@ export function ProjectsPage() {
                       className="action-btn highlight"
                       onClick={(e) => void handleRefreshOrReconnect(project.id, e)}
                       disabled={isRefreshing}
-                      title="Request browser permission to rescan folder"
                     >
                       <RefreshCw size={11} className={isRefreshing ? 'spin' : ''} />
-                      {isRefreshing ? 'Prompting...' : isStale ? 'Reconnect to update' : 'Reconnect'}
+                      {isRefreshing ? 'Prompting…' : 'Reconnect'}
                     </button>
                   )}
                   {status === 'unavailable' && browserSupported && (
@@ -327,7 +420,6 @@ export function ProjectsPage() {
                       className="action-btn"
                       onClick={(e) => void handleRelocateFolder(project.id, e)}
                       disabled={isRefreshing}
-                      title="Select new folder location to reconnect this index"
                     >
                       <FolderOpen size={11} />
                       Relocate
@@ -351,34 +443,17 @@ export function ProjectsPage() {
               {isPendingStale && (
                 <div className="stale-prompt-overlay" onClick={(e) => e.stopPropagation()}>
                   <p><b>Index Needs Refresh</b></p>
-                  <small>
-                    {status === 'connected'
-                      ? 'This project was indexed with an older scanner version. Refresh now to apply current exclusion rules and dependency parser updates.'
-                      : 'Folder reconnect is required to update this index to current scanner rules.'}
-                  </small>
+                  <small>Refresh now to apply updated exclusion rules and dependency parsing.</small>
                   <div className="stale-prompt-actions">
-                    {status === 'connected' && (
+                    {(status === 'connected' || status === 'permission-required') && (
                       <button
-                        className="confirm-delete-btn"
-                        style={{ background: '#7C3AED', borderColor: '#8B5CF6', color: 'white' }}
+                        className="primary small"
                         onClick={(e) => {
                           setStalePromptId(null);
                           void handleRefreshOrReconnect(project.id, e);
                         }}
                       >
-                        Refresh Index (Recommended)
-                      </button>
-                    )}
-                    {status === 'permission-required' && (
-                      <button
-                        className="confirm-delete-btn"
-                        style={{ background: '#7C3AED', borderColor: '#8B5CF6', color: 'white' }}
-                        onClick={(e) => {
-                          setStalePromptId(null);
-                          void handleRefreshOrReconnect(project.id, e);
-                        }}
-                      >
-                        Reconnect & Refresh
+                        Refresh Index
                       </button>
                     )}
                     <button
@@ -388,7 +463,7 @@ export function ProjectsPage() {
                         void openProject(project.id, true);
                       }}
                     >
-                      View Outdated Cache
+                      Open Cached
                     </button>
                   </div>
                 </div>
@@ -396,8 +471,8 @@ export function ProjectsPage() {
 
               {isPendingDelete && (
                 <div className="delete-confirm-overlay" onClick={(e) => e.stopPropagation()}>
-                  <p>Delete cached index for <b>{project.name}</b>?</p>
-                  <small>Files on disk are NEVER touched.</small>
+                  <p>Remove index for <b>{project.name}</b>?</p>
+                  <small>Disk files are never touched.</small>
                   <div className="delete-confirm-actions">
                     <button className="confirm-delete-btn" onClick={() => void confirmRemove(project.id)}>
                       Remove
@@ -416,19 +491,86 @@ export function ProjectsPage() {
           className="new-card"
           onClick={() => setImporting(true)}
           disabled={!browserSupported}
-          title={browserSupported ? 'Select a folder to analyze' : 'Requires Chromium desktop'}
+          title={browserSupported ? 'Select a local folder to index' : 'Requires Chromium desktop'}
         >
-          <Plus />
-          <b>Open a Project</b>
-          <span>{browserSupported ? 'Select a folder to analyze' : 'Chromium desktop required'}</span>
+          <Plus size={20} />
+          <b>Index Local Directory</b>
+          <span>{browserSupported ? 'Client-side analysis only' : 'Chromium desktop required'}</span>
         </button>
       </section>
 
-      {!projects.length && (
-        <p className="empty-hint">
-          No local projects saved yet. The curated demo is synthetic and is never mixed into your recent-project list.
-        </p>
-      )}
+      {/* Curated Multi-Project Fleet */}
+      <div className="section-heading" style={{ marginTop: '30px' }}>
+        <div>
+          <h2>Curated Architecture Fleet</h2>
+          <small className="section-sub">Synthetic reference codebases for immediate 2D, 3D, and Multi-Project exploration</small>
+        </div>
+        <button
+          className="secondary-cyan small"
+          disabled={totalChecked < 2}
+          onClick={() => void handleLaunchSelectedConstellation()}
+        >
+          <Orbit size={14} />
+          Visualize Selected ({totalChecked})
+        </button>
+      </div>
+
+      <section className="project-cards sample-cards">
+        {CURATED_SAMPLE_PROJECTS.map((sample) => {
+          const isChecked = selectedSampleIds.has(sample.id);
+          const cycleCount = sample.metrics.circularDependenciesCount ?? sample.dependencies?.circularDependencies.length ?? 0;
+          const dominantLang = sample.metrics.languages[0]?.language ?? 'TypeScript';
+
+          return (
+            <article className={`project-card sample-card ${isChecked ? 'checked' : ''}`} key={sample.id}>
+              <button
+                className={`card-select-toggle ${isChecked ? 'checked' : ''}`}
+                onClick={(e) => toggleSampleSelection(sample.id, e)}
+                title="Include in Multi-Project Constellation"
+                aria-label={`Include ${sample.name} in constellation`}
+                aria-pressed={isChecked}
+              >
+                {isChecked && <Check size={12} />}
+              </button>
+
+              <button
+                className="project-card-open"
+                onClick={() => setProject(sample)}
+                aria-label={`Open ${sample.name}`}
+              >
+                <div className="project-card-top">
+                  <span className="project-icon sample">
+                    <Boxes size={17} />
+                  </span>
+                  <div className="status-tag-line">
+                    <span className="status-tag connected">{dominantLang}</span>
+                    {cycleCount > 0 && (
+                      <span className="status-tag warning">
+                        <AlertTriangle size={10} /> {cycleCount} cycle
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <h3>{sample.name}</h3>
+                <p className="tabular-nums">
+                  {sample.metrics.files} files · {sample.metrics.totalLoc.toLocaleString()} loc · {sample.metrics.dependencyEdges} edges
+                </p>
+                <small>
+                  Packages: {(sample.dependencies?.externalPackages ?? []).join(', ') || 'none'}
+                </small>
+              </button>
+
+              <div className="project-card-footer">
+                <span className="sample-kind-note">Reference index</span>
+                <button className="action-btn highlight" onClick={() => setProject(sample)}>
+                  Open Map →
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </section>
 
       {importing && (
         <ImportProject
@@ -441,4 +583,3 @@ export function ProjectsPage() {
     </main>
   );
 }
-

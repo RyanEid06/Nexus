@@ -10,11 +10,16 @@ export interface HistoryEntry {
   page: AppPage;
   previewFileId: string | null;
   mapMode: MapMode;
+  projectId?: string;
+  constellationMode?: boolean;
 }
 
 interface AppState {
   page: AppPage;
   project: ProjectIndex | null;
+  workspaceProjects: ProjectIndex[];
+  constellationProjectIds: string[];
+  constellationMode: boolean;
   selectedNodeId: string | null;
   mapFocusNodeId: string | null;
   mapMode: MapMode;
@@ -27,6 +32,12 @@ interface AppState {
 
   setPage: (page: AppPage) => void;
   setProject: (project: ProjectIndex) => void;
+  addWorkspaceProject: (project: ProjectIndex) => void;
+  switchProject: (projectId: string, targetPage?: AppPage) => void;
+  removeWorkspaceProject: (projectId: string) => void;
+  setConstellationMode: (enabled: boolean) => void;
+  toggleConstellationProject: (projectId: string) => void;
+  launchConstellation: (projects: ProjectIndex[], activeProjectId?: string) => void;
   clearProject: () => void;
   selectNode: (id: string | null, recordHistory?: boolean) => void;
   setMapFocusNodeId: (id: string | null, recordHistory?: boolean) => void;
@@ -47,6 +58,17 @@ interface AppState {
 }
 
 const MAX_HISTORY = 50;
+const MAX_WORKSPACE_PROJECTS = 6;
+
+function upsertWorkspaceProject(list: ProjectIndex[], incoming: ProjectIndex): ProjectIndex[] {
+  const existingIdx = list.findIndex((p) => p.id === incoming.id);
+  if (existingIdx >= 0) {
+    const next = [...list];
+    next[existingIdx] = incoming;
+    return next;
+  }
+  return [...list, incoming].slice(-MAX_WORKSPACE_PROJECTS);
+}
 
 function pushHistoryEntry(
   history: HistoryEntry[],
@@ -62,7 +84,9 @@ function pushHistoryEntry(
     lastEntry.mapFocusNodeId === newEntry.mapFocusNodeId &&
     lastEntry.page === newEntry.page &&
     lastEntry.previewFileId === newEntry.previewFileId &&
-    lastEntry.mapMode === newEntry.mapMode
+    lastEntry.mapMode === newEntry.mapMode &&
+    lastEntry.projectId === newEntry.projectId &&
+    Boolean(lastEntry.constellationMode) === Boolean(newEntry.constellationMode)
   ) {
     return { navigationHistory: currentHistory, historyIndex: currentHistory.length - 1 };
   }
@@ -77,6 +101,9 @@ function pushHistoryEntry(
 export const useAppStore = create<AppState>((set, get) => ({
   page: 'projects',
   project: null,
+  workspaceProjects: [],
+  constellationProjectIds: [],
+  constellationMode: false,
   selectedNodeId: null,
   mapFocusNodeId: null,
   mapMode: '2d',
@@ -100,6 +127,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         page,
         previewFileId: state.previewFileId,
         mapMode: state.mapMode,
+        projectId: state.project?.id,
+        constellationMode: state.constellationMode,
       }
     );
 
@@ -111,22 +140,41 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setProject: (project) => {
+    const state = get();
     const rootId = project.nodes[0]?.id ?? null;
-    // Release rule #8: Do NOT auto-expand every depth-1 directory!
     // Start with a clean, unexploded overview with only root expanded.
     const initialExpanded = new Set<string>();
     if (rootId) {
       initialExpanded.add(rootId);
     }
 
+    const nextWorkspace = upsertWorkspaceProject(state.workspaceProjects, project);
+    const nextConstellationIds = state.constellationProjectIds.includes(project.id)
+      ? state.constellationProjectIds
+      : [...state.constellationProjectIds, project.id].slice(-MAX_WORKSPACE_PROJECTS);
+
     const initialHistory: HistoryEntry[] = rootId
-      ? [{ nodeId: rootId, mapFocusNodeId: rootId, page: 'graph', previewFileId: null, mapMode: '2d' }]
+      ? [
+          {
+            nodeId: rootId,
+            mapFocusNodeId: rootId,
+            page: 'graph',
+            previewFileId: null,
+            mapMode: '2d',
+            projectId: project.id,
+            constellationMode: false,
+          },
+        ]
       : [];
 
     set({
       project,
+      workspaceProjects: nextWorkspace,
+      constellationProjectIds: nextConstellationIds,
+      constellationMode: false,
       page: 'graph',
       mapMode: '2d', // New/opened projects strictly default to 2D
+      relationshipMode: 'hierarchy',
       selectedNodeId: rootId,
       mapFocusNodeId: rootId,
       previewFileId: null,
@@ -136,13 +184,193 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  addWorkspaceProject: (project) => {
+    set((state) => {
+      const nextWorkspace = upsertWorkspaceProject(state.workspaceProjects, project);
+      const nextConstellationIds = state.constellationProjectIds.includes(project.id)
+        ? state.constellationProjectIds
+        : [...state.constellationProjectIds, project.id].slice(-MAX_WORKSPACE_PROJECTS);
+      return {
+        workspaceProjects: nextWorkspace,
+        constellationProjectIds: nextConstellationIds,
+      };
+    });
+  },
+
+  switchProject: (projectId, targetPage) => {
+    const state = get();
+    const target = state.workspaceProjects.find((p) => p.id === projectId);
+    if (!target) return;
+
+    const rootId = target.nodes[0]?.id ?? null;
+    const nextExpanded = new Set<string>();
+    if (rootId) nextExpanded.add(rootId);
+
+    const resolvedPage = targetPage ?? (state.page === 'projects' || state.page === 'settings' ? 'graph' : state.page);
+
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
+      {
+        nodeId: rootId,
+        mapFocusNodeId: rootId,
+        page: resolvedPage,
+        previewFileId: null,
+        mapMode: state.mapMode,
+        projectId: target.id,
+        constellationMode: false,
+      }
+    );
+
+    set({
+      project: target,
+      constellationMode: false,
+      page: resolvedPage,
+      selectedNodeId: rootId,
+      mapFocusNodeId: rootId,
+      previewFileId: null,
+      expandedNodeIds: nextExpanded,
+      navigationHistory,
+      historyIndex,
+    });
+  },
+
+  removeWorkspaceProject: (projectId) => {
+    set((state) => {
+      const nextWorkspace = state.workspaceProjects.filter((p) => p.id !== projectId);
+      const nextConstellationIds = state.constellationProjectIds.filter((id) => id !== projectId);
+      if (state.project?.id === projectId) {
+        const fallback = nextWorkspace[0] ?? null;
+        if (!fallback) {
+          return {
+            project: null,
+            workspaceProjects: [],
+            constellationProjectIds: [],
+            constellationMode: false,
+            selectedNodeId: null,
+            mapFocusNodeId: null,
+            previewFileId: null,
+            expandedNodeIds: new Set(),
+            page: 'projects',
+          };
+        }
+        const rootId = fallback.nodes[0]?.id ?? null;
+        return {
+          project: fallback,
+          workspaceProjects: nextWorkspace,
+          constellationProjectIds: nextConstellationIds,
+          constellationMode: nextConstellationIds.length >= 2 ? state.constellationMode : false,
+          selectedNodeId: rootId,
+          mapFocusNodeId: rootId,
+          previewFileId: null,
+          expandedNodeIds: new Set(rootId ? [rootId] : []),
+        };
+      }
+      return {
+        workspaceProjects: nextWorkspace,
+        constellationProjectIds: nextConstellationIds,
+        constellationMode: nextConstellationIds.length >= 2 ? state.constellationMode : false,
+      };
+    });
+  },
+
+  setConstellationMode: (enabled) => {
+    const state = get();
+    if (enabled && state.workspaceProjects.length < 2) return;
+    if (state.constellationMode === enabled) return;
+
+    const nextIds =
+      enabled && state.constellationProjectIds.length < 2
+        ? state.workspaceProjects.map((p) => p.id)
+        : state.constellationProjectIds;
+
+    const { navigationHistory, historyIndex } = pushHistoryEntry(
+      state.navigationHistory,
+      state.historyIndex,
+      {
+        nodeId: state.selectedNodeId,
+        mapFocusNodeId: state.mapFocusNodeId,
+        page: 'graph',
+        previewFileId: null,
+        mapMode: state.mapMode,
+        projectId: state.project?.id,
+        constellationMode: enabled,
+      }
+    );
+
+    set({
+      constellationMode: enabled,
+      constellationProjectIds: nextIds,
+      page: 'graph',
+      previewFileId: null,
+      navigationHistory,
+      historyIndex,
+    });
+  },
+
+  toggleConstellationProject: (projectId) => {
+    set((state) => {
+      const exists = state.constellationProjectIds.includes(projectId);
+      if (exists && state.constellationProjectIds.length <= 2 && state.constellationMode) {
+        return state; // Keep at least 2 projects when actively viewing constellation
+      }
+      const next = exists
+        ? state.constellationProjectIds.filter((id) => id !== projectId)
+        : [...state.constellationProjectIds, projectId].slice(-MAX_WORKSPACE_PROJECTS);
+      return { constellationProjectIds: next };
+    });
+  },
+
+  launchConstellation: (projects, activeProjectId) => {
+    if (projects.length === 0) return;
+    const active = (activeProjectId ? projects.find((p) => p.id === activeProjectId) : null) ?? projects[0];
+    const rootId = active.nodes[0]?.id ?? null;
+    const initialExpanded = new Set<string>(rootId ? [rootId] : []);
+
+    let mergedWorkspace = get().workspaceProjects;
+    for (const p of projects) {
+      mergedWorkspace = upsertWorkspaceProject(mergedWorkspace, p);
+    }
+
+    const constellationIds = projects.map((p) => p.id).slice(0, MAX_WORKSPACE_PROJECTS);
+    const isMulti = constellationIds.length >= 2;
+
+    const entry: HistoryEntry = {
+      nodeId: rootId,
+      mapFocusNodeId: rootId,
+      page: 'graph',
+      previewFileId: null,
+      mapMode: get().mapMode,
+      projectId: active.id,
+      constellationMode: isMulti,
+    };
+
+    set({
+      project: active,
+      workspaceProjects: mergedWorkspace,
+      constellationProjectIds: constellationIds,
+      constellationMode: isMulti,
+      page: 'graph',
+      selectedNodeId: rootId,
+      mapFocusNodeId: rootId,
+      previewFileId: null,
+      expandedNodeIds: initialExpanded,
+      navigationHistory: [entry],
+      historyIndex: 0,
+    });
+  },
+
   clearProject: () =>
     set({
       project: null,
+      workspaceProjects: [],
+      constellationProjectIds: [],
+      constellationMode: false,
       selectedNodeId: null,
       mapFocusNodeId: null,
       previewFileId: null,
       mapMode: '2d',
+      relationshipMode: 'hierarchy',
       expandedNodeIds: new Set(),
       isInspectorCollapsed: false,
       navigationHistory: [],
@@ -164,6 +392,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           page: state.page,
           previewFileId: state.previewFileId,
           mapMode: state.mapMode,
+          projectId: state.project?.id,
+          constellationMode: state.constellationMode,
         }
       );
       set({ mapFocusNodeId, navigationHistory, historyIndex });
@@ -190,10 +420,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           page: state.page,
           previewFileId: state.previewFileId,
           mapMode: state.mapMode,
+          projectId: state.project?.id,
+          constellationMode: false,
         }
       );
 
       set({
+        constellationMode: false,
         mapFocusNodeId: id,
         selectedNodeId: id,
         expandedNodeIds: nextExpanded,
@@ -220,6 +453,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           page: state.page,
           previewFileId: state.previewFileId,
           mapMode: state.mapMode,
+          projectId: state.project?.id,
+          constellationMode: state.constellationMode,
         }
       );
 
@@ -242,7 +477,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const rootId = state.project.nodes[0]?.id ?? null;
     const nextExpanded = new Set(state.expandedNodeIds);
 
-    // Expand all ancestors leading to this node using O(1) Map lookups
     let curr = node.parentId ? nodesById.get(node.parentId) : undefined;
     while (curr) {
       nextExpanded.add(curr.id);
@@ -256,7 +490,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       targetFocusId = node.id;
       nextExpanded.add(node.id);
     } else {
-      // file: parent directory is the map focus
       targetFocusId = node.parentId ?? rootId ?? node.id;
       if (node.parentId) {
         nextExpanded.add(node.parentId);
@@ -272,10 +505,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         page: 'graph',
         previewFileId: null,
         mapMode: state.mapMode,
+        projectId: state.project?.id,
+        constellationMode: false,
       }
     );
 
     set({
+      constellationMode: false,
       selectedNodeId: node.id,
       mapFocusNodeId: targetFocusId,
       page: 'graph',
@@ -304,6 +540,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           page: state.page,
           previewFileId: state.previewFileId,
           mapMode: state.mapMode,
+          projectId: state.project?.id,
+          constellationMode: state.constellationMode,
         }
       );
 
@@ -376,6 +614,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         page: state.page,
         previewFileId: nodeId,
         mapMode: state.mapMode,
+        projectId: state.project?.id,
+        constellationMode: state.constellationMode,
       }
     );
 
@@ -400,6 +640,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         page: state.page,
         previewFileId: null,
         mapMode: state.mapMode,
+        projectId: state.project?.id,
+        constellationMode: state.constellationMode,
       }
     );
 
@@ -416,13 +658,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextIndex = state.historyIndex - 1;
       const entry = state.navigationHistory[nextIndex];
       if (entry) {
+        const restoredProject = entry.projectId
+          ? state.workspaceProjects.find((p) => p.id === entry.projectId) ?? state.project
+          : state.project;
         set({
           historyIndex: nextIndex,
+          project: restoredProject,
           selectedNodeId: entry.nodeId,
           mapFocusNodeId: entry.mapFocusNodeId,
           page: entry.page,
           previewFileId: entry.previewFileId,
           mapMode: entry.mapMode,
+          constellationMode: Boolean(entry.constellationMode),
         });
       }
     }
@@ -434,16 +681,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextIndex = state.historyIndex + 1;
       const entry = state.navigationHistory[nextIndex];
       if (entry) {
+        const restoredProject = entry.projectId
+          ? state.workspaceProjects.find((p) => p.id === entry.projectId) ?? state.project
+          : state.project;
         set({
           historyIndex: nextIndex,
+          project: restoredProject,
           selectedNodeId: entry.nodeId,
           mapFocusNodeId: entry.mapFocusNodeId,
           page: entry.page,
           previewFileId: entry.previewFileId,
           mapMode: entry.mapMode,
+          constellationMode: Boolean(entry.constellationMode),
         });
       }
     }
   },
 }));
-

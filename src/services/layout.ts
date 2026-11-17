@@ -48,67 +48,85 @@ export function withDeterministicLayout(nodes: ProjectNode[]): ProjectNode[] {
 
   roots.forEach((root) => walk(root.id, 1));
 
-  // O(N) Spatial Hash Grid collision relaxation pass
-  // Replaces catastrophic O(N^2)/O(N^3) global pair comparisons
+  // O(N) Spatial Hash Grid collision relaxation pass using numeric grid keys & flat arrays
+  const count = nodes.length;
+  const posX = new Float64Array(count);
+  const posY = new Float64Array(count);
+  const posZ = new Float64Array(count);
+  const hasParent = new Uint8Array(count);
+  const idList: string[] = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const node = nodes[i];
+    idList[i] = node.id;
+    hasParent[i] = node.parentId ? 1 : 0;
+    const p = positioned.get(node.id);
+    if (p) {
+      posX[i] = p[0];
+      posY[i] = p[1];
+      posZ[i] = p[2];
+    }
+  }
+
   const minSeparation = 1.1;
-  const cellSize = minSeparation;
-  const grid = new Map<string, string[]>();
+  const minSepSq = minSeparation * minSeparation;
+  const invCellSize = 1 / minSeparation;
+  const OFFSET = 32768;
+  const STRIDE_X = 4294967296; // 65536 * 65536
+  const STRIDE_Y = 65536;
+  const grid = new Map<number, number[]>();
 
-  const getCellKey = (x: number, y: number, z: number) => {
-    const cx = Math.floor(x / cellSize);
-    const cy = Math.floor(y / cellSize);
-    const cz = Math.floor(z / cellSize);
-    return `${cx},${cy},${cz}`;
-  };
-
-  // Populate grid with non-root nodes
-  for (const [id, pos] of positioned.entries()) {
-    const node = byId.get(id);
-    if (!node?.parentId) continue; // Keep roots anchored
-    const key = getCellKey(pos[0], pos[1], pos[2]);
-    const bucket = grid.get(key) ?? [];
-    bucket.push(id);
-    grid.set(key, bucket);
+  for (let i = 0; i < count; i += 1) {
+    if (!hasParent[i]) continue;
+    const cx = Math.floor(posX[i] * invCellSize);
+    const cy = Math.floor(posY[i] * invCellSize);
+    const cz = Math.floor(posZ[i] * invCellSize);
+    const key = (cx + OFFSET) * STRIDE_X + (cy + OFFSET) * STRIDE_Y + (cz + OFFSET);
+    let bucket = grid.get(key);
+    if (!bucket) {
+      bucket = [i];
+      grid.set(key, bucket);
+    } else {
+      bucket.push(i);
+    }
   }
 
   // Relaxation pass querying only immediate 27 neighboring cells (strictly O(N))
   for (let pass = 0; pass < 2; pass += 1) {
-    for (const [idA, posA] of positioned.entries()) {
-      const nodeA = byId.get(idA);
-      if (!nodeA?.parentId) continue;
-
-      const cx = Math.floor(posA[0] / cellSize);
-      const cy = Math.floor(posA[1] / cellSize);
-      const cz = Math.floor(posA[2] / cellSize);
+    for (let i = 0; i < count; i += 1) {
+      if (!hasParent[i]) continue;
+      const idA = idList[i];
+      const cx = Math.floor(posX[i] * invCellSize);
+      const cy = Math.floor(posY[i] * invCellSize);
+      const cz = Math.floor(posZ[i] * invCellSize);
 
       for (let dx = -1; dx <= 1; dx += 1) {
+        const baseX = (cx + dx + OFFSET) * STRIDE_X;
         for (let dy = -1; dy <= 1; dy += 1) {
+          const baseXY = baseX + (cy + dy + OFFSET) * STRIDE_Y;
           for (let dz = -1; dz <= 1; dz += 1) {
-            const neighborKey = `${cx + dx},${cy + dy},${cz + dz}`;
-            const bucket = grid.get(neighborKey);
+            const bucket = grid.get(baseXY + (cz + dz + OFFSET));
             if (!bucket) continue;
 
-            for (const idB of bucket) {
-              if (idA >= idB) continue; // Process each pair once
-              const nodeB = byId.get(idB);
-              if (!nodeB?.parentId) continue;
+            for (let b = 0; b < bucket.length; b += 1) {
+              const j = bucket[b];
+              if (idA >= idList[j]) continue;
 
-              const posB = positioned.get(idB)!;
-              const diffX = posB[0] - posA[0];
-              const diffY = posB[1] - posA[1];
-              const diffZ = posB[2] - posA[2];
+              const diffX = posX[j] - posX[i];
+              const diffY = posY[j] - posY[i];
+              const diffZ = posZ[j] - posZ[i];
               const distSq = diffX * diffX + diffY * diffY + diffZ * diffZ;
 
-              if (distSq < minSeparation * minSeparation && distSq > 0.0001) {
+              if (distSq < minSepSq && distSq > 0.0001) {
                 const dist = Math.sqrt(distSq);
                 const overlap = (minSeparation - dist) * 0.35;
                 const nx = (diffX / dist) * overlap;
                 const nz = (diffZ / dist) * overlap;
 
-                posA[0] -= nx;
-                posA[2] -= nz;
-                posB[0] += nx;
-                posB[2] += nz;
+                posX[i] -= nx;
+                posZ[i] -= nz;
+                posX[j] += nx;
+                posZ[j] += nz;
               }
             }
           }
@@ -117,12 +135,14 @@ export function withDeterministicLayout(nodes: ProjectNode[]): ProjectNode[] {
     }
   }
 
-  return nodes.map((node) => {
-    const p = positioned.get(node.id) ?? [0, 0, 0];
+  return nodes.map((node, i) => {
+    const x = posX[i];
+    const y = posY[i];
+    const z = posZ[i];
     const cleanPos: [number, number, number] = [
-      Number.isFinite(p[0]) ? p[0] : 0,
-      Number.isFinite(p[1]) ? p[1] : 0,
-      Number.isFinite(p[2]) ? p[2] : 0,
+      Number.isFinite(x) ? x : 0,
+      Number.isFinite(y) ? y : 0,
+      Number.isFinite(z) ? z : 0,
     ];
     return { ...node, position: cleanPos };
   });

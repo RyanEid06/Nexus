@@ -99,7 +99,7 @@ export const demoProject: ProjectIndex = {
     selectedCategories: ['source', 'configuration', 'documentation', 'test'],
     maxTextFileBytes: 2 * 1024 * 1024,
     maxEntries: 50_000,
-    scannerAnalysisVersion: 1,
+    scannerAnalysisVersion: 2,
     dependencyParserVersion: 2,
     dependencyResolverVersion: 2,
   },

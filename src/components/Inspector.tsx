@@ -1,9 +1,15 @@
-import { ChevronLeft, ChevronRight, FileCode2, Folder, FolderOpen, Network } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileCode2, Folder, FolderOpen, Network, Orbit } from 'lucide-react';
+import { computeMultiProjectConstellation } from '../services/constellation';
 import { useAppStore } from '../store/useAppStore';
 import { compactBytes } from '../utils/fileTypes';
 
 export function Inspector() {
   const project = useAppStore((s) => s.project);
+  const workspaceProjects = useAppStore((s) => s.workspaceProjects);
+  const constellationProjectIds = useAppStore((s) => s.constellationProjectIds);
+  const constellationMode = useAppStore((s) => s.constellationMode);
+  const setConstellationMode = useAppStore((s) => s.setConstellationMode);
+  const switchProject = useAppStore((s) => s.switchProject);
   const selectedId = useAppStore((s) => s.selectedNodeId);
   const isCollapsed = useAppStore((s) => s.isInspectorCollapsed);
   const toggleInspector = useAppStore((s) => s.toggleInspector);
@@ -13,12 +19,6 @@ export function Inspector() {
     return <aside className="inspector" />;
   }
 
-  const node = project.nodes.find((item) => item.id === selectedId) ?? project.nodes[0];
-  if (!node) {
-    return <aside className="inspector" />;
-  }
-
-  // Collapsed ribbon: returns space to the Map while preserving selection
   if (isCollapsed) {
     return (
       <aside className="inspector-collapsed-ribbon" aria-label="Inspector collapsed">
@@ -35,11 +35,127 @@ export function Inspector() {
     );
   }
 
+  // Multi-Project Constellation Comparison Inspector
+  if (constellationMode && workspaceProjects.length >= 2) {
+    const idSet = new Set(constellationProjectIds);
+    const selectedFleet = workspaceProjects.filter((p) => idSet.has(p.id));
+    const constellation = computeMultiProjectConstellation(selectedFleet.length >= 2 ? selectedFleet : workspaceProjects);
+
+    return (
+      <aside className="inspector" aria-label="Multi-project constellation inspector">
+        <div className="inspector-header-row">
+          <div className="inspector-title">
+            <span className="icon-box">
+              <Orbit size={18} />
+            </span>
+            <div>
+              <h2>Constellation</h2>
+              <p>{constellation.totals.projects} repositories compared</p>
+            </div>
+          </div>
+          <button
+            className="inspector-collapse-btn"
+            onClick={toggleInspector}
+            title="Collapse inspector panel"
+            aria-label="Collapse inspector panel"
+          >
+            <ChevronRight size={15} />
+          </button>
+        </div>
+
+        <dl className="details tabular-nums">
+          <div>
+            <dt>Active focus</dt>
+            <dd>{project.name}</dd>
+          </div>
+          <div>
+            <dt>Fleet files</dt>
+            <dd>{constellation.totals.files.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Total LOC</dt>
+            <dd>{constellation.totals.totalLoc.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Internal edges</dt>
+            <dd>{constellation.totals.dependencyEdges.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Circular cycles</dt>
+            <dd>{constellation.totals.circularCycles}</dd>
+          </div>
+          <div>
+            <dt>Shared packages</dt>
+            <dd>{constellation.totals.sharedPackagesCount}</dd>
+          </div>
+        </dl>
+
+        <h3>Repository Comparison</h3>
+        <div className="compare-list">
+          {constellation.projects.map((cp) => {
+            const isActive = cp.projectId === project.id;
+            return (
+              <div
+                key={cp.projectId}
+                className={`compare-card ${isActive ? 'active' : ''}`}
+                onClick={() => {
+                  switchProject(cp.projectId, 'graph');
+                  setConstellationMode(true);
+                }}
+              >
+                <div className="compare-card-head">
+                  <span className="compare-swatch" style={{ background: cp.accentColor }} />
+                  <b>{cp.name}</b>
+                  <small>{cp.dominantLanguage}</small>
+                </div>
+                <div className="compare-card-stats tabular-nums">
+                  <span>{cp.files} files</span>
+                  <span>{cp.totalLoc.toLocaleString()} loc</span>
+                  <span>{cp.couplingRatio} edge/file</span>
+                </div>
+                {isActive && (
+                  <button
+                    className="action-btn highlight"
+                    style={{ width: '100%', marginTop: '8px', justifyContent: 'center' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConstellationMode(false);
+                    }}
+                  >
+                    Enter {cp.name} Map →
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {constellation.sharedPackages.length > 0 && (
+          <>
+            <h3>Shared External Bridges</h3>
+            <div className="bridge-list">
+              {constellation.sharedPackages.map((sp) => (
+                <div key={sp.name} className="bridge-item">
+                  <b>{sp.name}</b>
+                  <small>{sp.projectNames.join(' · ')}</small>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </aside>
+    );
+  }
+
+  const node = project.nodes.find((item) => item.id === selectedId) ?? project.nodes[0];
+  if (!node) {
+    return <aside className="inspector" />;
+  }
+
   const children = project.nodes.filter((item) => item.parentId === node.id);
   const Icon = node.kind === 'project' ? Network : node.kind === 'directory' ? FolderOpen : FileCode2;
   const fileCount = node.kind === 'file' ? 1 : node.descendantFiles ?? 0;
 
-  // Compute dependency info for file
   const outgoingCount =
     node.kind === 'file' && project.dependencies
       ? project.dependencies.edges.filter((e) => e.sourcePath === node.path).length
@@ -56,7 +172,7 @@ export function Inspector() {
       <div className="inspector-header-row">
         <div className="inspector-title">
           <span className="icon-box">
-            <Icon size={20} />
+            <Icon size={18} />
           </span>
           <div>
             <h2>{node.name}</h2>
@@ -70,11 +186,11 @@ export function Inspector() {
           title="Collapse inspector panel"
           aria-label="Collapse inspector panel"
         >
-          <ChevronRight size={16} />
+          <ChevronRight size={15} />
         </button>
       </div>
 
-      <dl className="details">
+      <dl className="details tabular-nums">
         <div>
           <dt>Path</dt>
           <dd>{node.path || '(root)'}</dd>
@@ -134,7 +250,7 @@ export function Inspector() {
             style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
             onClick={() => useAppStore.getState().openFileViewer(node.id)}
           >
-            <FileCode2 size={15} /> Open File Preview
+            <FileCode2 size={14} /> Open File Preview
           </button>
           {(outgoingCount > 0 || incomingCount > 0) && (
             <button
@@ -142,7 +258,7 @@ export function Inspector() {
               style={{ width: '100%', marginTop: '6px', justifyContent: 'center' }}
               onClick={() => setPage('dependencies')}
             >
-              View in Dependencies Explorer →
+              Inspect Dependencies →
             </button>
           )}
         </div>
@@ -150,7 +266,6 @@ export function Inspector() {
 
       <h3>Direct child items ({children.length})</h3>
       <div className="child-list">
-        {/* Short preview of at most 8 items to prevent panel domination (Section 15) */}
         {children.slice(0, 8).map((child) => (
           <button
             key={child.id}
@@ -161,9 +276,9 @@ export function Inspector() {
             }}
             title={child.kind === 'file' ? 'Click to select · Double-click to open' : 'Click to select · Double-click to explore'}
           >
-            {child.kind === 'directory' ? <Folder size={15} /> : <FileCode2 size={15} />}
+            {child.kind === 'directory' ? <Folder size={14} /> : <FileCode2 size={14} />}
             <span>{child.name}</span>
-            <small>{child.loc ? `${child.loc.toLocaleString()} lines` : ''}</small>
+            <small className="tabular-nums">{child.loc ? `${child.loc.toLocaleString()}L` : ''}</small>
           </button>
         ))}
         {!children.length && <p className="muted">No child items.</p>}
@@ -176,7 +291,7 @@ export function Inspector() {
               setPage('structure');
             }}
           >
-            View all {children.length.toLocaleString()} children in Structure →
+            View all {children.length.toLocaleString()} children →
           </button>
         )}
       </div>

@@ -1,10 +1,12 @@
 import { useRef, useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft,
+  Boxes,
   Compass,
   Crosshair,
   Maximize2,
   Minimize2,
+  Orbit,
   RotateCcw,
 } from 'lucide-react';
 import { Inspector } from './Inspector';
@@ -14,6 +16,7 @@ import { WorkspaceTabs } from './WorkspaceTabs';
 import { FileViewer } from './FileViewer';
 import { useAppStore, type RelationshipFilterMode } from '../store/useAppStore';
 import { buildGraphIndex, computeGraphViewport } from '../services/graphViewport';
+import { computeMultiProjectConstellation } from '../services/constellation';
 
 export function GraphPage() {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -21,6 +24,12 @@ export function GraphPage() {
   const [fullscreenAvailable, setFullscreenAvailable] = useState(true);
 
   const project = useAppStore((s) => s.project);
+  const workspaceProjects = useAppStore((s) => s.workspaceProjects);
+  const constellationProjectIds = useAppStore((s) => s.constellationProjectIds);
+  const constellationMode = useAppStore((s) => s.constellationMode);
+  const setConstellationMode = useAppStore((s) => s.setConstellationMode);
+  const switchProject = useAppStore((s) => s.switchProject);
+
   const mapMode = useAppStore((s) => s.mapMode);
   const setMapMode = useAppStore((s) => s.setMapMode);
   const relationshipMode = useAppStore((s) => s.relationshipMode);
@@ -34,16 +43,13 @@ export function GraphPage() {
 
   useEffect(() => {
     setFullscreenAvailable(typeof document !== 'undefined' && Boolean(document.fullscreenEnabled));
-
     const onFullscreenChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
     };
-
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
-  // Keyboard navigation on map (Enter to explore/open, Escape to go up)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -57,6 +63,11 @@ export function GraphPage() {
 
       if (e.key === 'Escape') {
         const state = useAppStore.getState();
+        if (state.constellationMode) {
+          e.preventDefault();
+          state.setConstellationMode(false);
+          return;
+        }
         if (state.project) {
           const vp = computeGraphViewport({
             project: state.project,
@@ -114,9 +125,8 @@ export function GraphPage() {
 
   const graphIndex = useMemo(() => (project ? buildGraphIndex(project) : null), [project]);
 
-  // Viewport metrics and breadcrumbs
   const viewport = useMemo(() => {
-    if (!project) return null;
+    if (!project || constellationMode) return null;
     return computeGraphViewport({
       project,
       graphIndex: graphIndex ?? undefined,
@@ -125,86 +135,130 @@ export function GraphPage() {
       expandedNodeIds,
       relationshipMode,
     });
-  }, [project, graphIndex, mapFocusNodeId, selectedNodeId, expandedNodeIds, relationshipMode]);
+  }, [project, graphIndex, constellationMode, mapFocusNodeId, selectedNodeId, expandedNodeIds, relationshipMode]);
+
+  const constellation = useMemo(() => {
+    if (!constellationMode) return null;
+    const idSet = new Set(constellationProjectIds);
+    const selected = workspaceProjects.filter((p) => idSet.has(p.id));
+    const fleet = selected.length >= 2 ? selected : workspaceProjects;
+    if (fleet.length < 2) return null;
+    return computeMultiProjectConstellation(fleet);
+  }, [constellationMode, workspaceProjects, constellationProjectIds]);
+
+  const canConstellation = workspaceProjects.length >= 2;
 
   return (
     <main className={`workspace ${isInspectorCollapsed ? 'inspector-collapsed' : ''}`}>
       <section className="workspace-main">
         <WorkspaceTabs />
         <div className="graph-stage" ref={stageRef}>
-          {/* Top Map Header Controls with Zero Overlap */}
+          {/* Top-left CAD Telemetry & Filter HUD */}
           <div className="map-header-controls">
-            <div className="map-filter-row">
-              <div className="map-filter-bar">
-                <span className="filter-label">Filter:</span>
-                <div className="filter-pill-group" role="tablist">
-                  {(['hierarchy', 'dependencies', 'both'] as RelationshipFilterMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      className={`filter-btn ${relationshipMode === mode ? 'active' : ''}`}
-                      onClick={() => setRelationshipMode(mode)}
-                    >
-                      {mode === 'hierarchy' ? 'Hierarchy' : mode === 'dependencies' ? 'Dependencies' : 'Both'}
-                    </button>
-                  ))}
+            {constellation ? (
+              <div className="map-filter-row">
+                <div className="map-filter-bar">
+                  <span className="filter-label">
+                    <Boxes size={13} /> Constellation
+                  </span>
+                  <div className="constellation-project-chips">
+                    {constellation.projects.map((cp) => (
+                      <button
+                        key={cp.projectId}
+                        className={`constellation-chip ${cp.projectId === project?.id ? 'active' : ''}`}
+                        onClick={() => {
+                          switchProject(cp.projectId, 'graph');
+                          setConstellationMode(true);
+                        }}
+                        title={`Focus ${cp.name} in constellation · ${cp.files} files · ${cp.totalLoc.toLocaleString()} loc`}
+                      >
+                        <span className="constellation-chip-swatch" style={{ background: cp.accentColor }} />
+                        <span>{cp.name}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-
-              {viewport && (
                 <div className="map-status-info">
-                  <span>
-                    {viewport.visibleNodes.length} nodes shown · {viewport.totalDirectChildren} direct children
-                    {viewport.hiddenDirectChildren > 0 && ` (${viewport.hiddenDirectChildren} hidden)`}
-                    {viewport.visibleDependenciesCount > 0 && ` · ${viewport.visibleDependenciesCount} deps`}
+                  <span className="tabular-nums">
+                    {constellation.totals.projects} projects · {constellation.totals.files.toLocaleString()} files · {constellation.totals.totalLoc.toLocaleString()} loc · {constellation.totals.sharedPackagesCount} shared packages
                   </span>
                 </div>
-              )}
-            </div>
-
-            {viewport && (
-              <div className="map-breadcrumbs-bar">
-                <div className="map-breadcrumbs-nav">
-                  {!viewport.isProjectRootFocused && (
-                    <button
-                      className="map-back-btn"
-                      onClick={() => navigateUpToParentFocus()}
-                      title="Go up to parent directory (Esc)"
-                      aria-label="Go up to parent directory"
-                    >
-                      <ArrowLeft size={13} />
-                      <span>Back</span>
-                    </button>
-                  )}
-                  <nav className="map-breadcrumbs-trail" aria-label="Directory breadcrumbs">
-                    {viewport.breadcrumbTrail.map((crumb, idx) => {
-                      const isLast = idx === viewport.breadcrumbTrail.length - 1;
-                      const displayName = crumb.kind === 'project' ? project?.name ?? 'Root' : crumb.name;
-                      return (
-                        <span key={crumb.id} className="map-breadcrumb-item">
-                          {idx > 0 && <span className="map-breadcrumb-sep">/</span>}
-                          {isLast ? (
-                            <span className="map-breadcrumb-current" aria-current="location">
-                              {displayName}
-                            </span>
-                          ) : (
-                            <button
-                              className="map-breadcrumb-btn"
-                              onClick={() => setMapFocusNodeId(crumb.id)}
-                              title={`Focus on ${displayName}`}
-                            >
-                              {displayName}
-                            </button>
-                          )}
-                        </span>
-                      );
-                    })}
-                  </nav>
-                </div>
               </div>
+            ) : (
+              <>
+                <div className="map-filter-row">
+                  <div className="map-filter-bar">
+                    <span className="filter-label">Layer</span>
+                    <div className="filter-segmented" role="tablist">
+                      {(['hierarchy', 'dependencies', 'both'] as RelationshipFilterMode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          className={`filter-btn ${relationshipMode === mode ? 'active' : ''}`}
+                          onClick={() => setRelationshipMode(mode)}
+                        >
+                          {mode === 'hierarchy' ? 'Hierarchy' : mode === 'dependencies' ? 'Dependencies' : 'Both'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {viewport && (
+                    <div className="map-status-info">
+                      <span className="tabular-nums">
+                        {viewport.visibleNodes.length} nodes · {viewport.totalDirectChildren} children
+                        {viewport.hiddenDirectChildren > 0 && ` · +${viewport.hiddenDirectChildren} hidden`}
+                        {viewport.visibleDependenciesCount > 0 && ` · ${viewport.visibleDependenciesCount} deps`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {viewport && (
+                  <div className="map-breadcrumbs-bar">
+                    <div className="map-breadcrumbs-nav">
+                      {!viewport.isProjectRootFocused && (
+                        <button
+                          className="map-back-btn"
+                          onClick={() => navigateUpToParentFocus()}
+                          title="Go up to parent directory (Esc)"
+                          aria-label="Go up to parent directory"
+                        >
+                          <ArrowLeft size={12} />
+                          <span>Up</span>
+                        </button>
+                      )}
+                      <nav className="map-breadcrumbs-trail" aria-label="Directory breadcrumbs">
+                        {viewport.breadcrumbTrail.map((crumb, idx) => {
+                          const isLast = idx === viewport.breadcrumbTrail.length - 1;
+                          const displayName = crumb.kind === 'project' ? project?.name ?? 'Root' : crumb.name;
+                          return (
+                            <span key={crumb.id} className="map-breadcrumb-item">
+                              {idx > 0 && <span className="map-breadcrumb-sep">/</span>}
+                              {isLast ? (
+                                <span className="map-breadcrumb-current" aria-current="location">
+                                  {displayName}
+                                </span>
+                              ) : (
+                                <button
+                                  className="map-breadcrumb-btn"
+                                  onClick={() => setMapFocusNodeId(crumb.id)}
+                                  title={`Focus on ${displayName}`}
+                                >
+                                  {displayName}
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </nav>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* Canvas Layers with isolated rendering and pointer events */}
+          {/* Isolated 2D / 3D Canvas Layers */}
           <div
             className={`graph-canvas graph-canvas-layer ${mapMode === '2d' ? 'is-active' : 'is-inactive'}`}
             aria-hidden={mapMode !== '2d'}
@@ -218,15 +272,41 @@ export function GraphPage() {
             <ProjectGraph active={mapMode === '3d'} relationshipMode={relationshipMode} />
           </div>
 
-          {/* Bottom Left Navigation Hint */}
+          {/* Bottom-left Interaction Legend */}
           <div className="graph-help">
-            {mapMode === '2d'
-              ? 'Drag to pan · Scroll to zoom · Double-click folder to focus · Double-click file to open'
-              : 'Drag to orbit · Right-drag to pan · Scroll to zoom · Double-click folder to focus · Double-click file to open'}
+            {constellation
+              ? 'Click to inspect · Double-click project to focus'
+              : mapMode === '2d'
+              ? 'Drag to pan · Scroll to zoom · Double-click to open'
+              : 'Drag orbit · Right-drag pan · Scroll zoom · Double-click open'}
           </div>
 
-          {/* Bottom Right Controls (Matching REFERENCE_ART/2D_APPROVED.png) */}
+          {/* Bottom-right Precision Control Dock */}
           <div className="graph-toolbar">
+            {canConstellation && (
+              <div className="mode-toggle-segmented" role="radiogroup" aria-label="Scope Mode">
+                <button
+                  className={!constellationMode ? 'active' : ''}
+                  role="radio"
+                  aria-checked={!constellationMode}
+                  onClick={() => setConstellationMode(false)}
+                  title="Inspect single active project"
+                >
+                  Single
+                </button>
+                <button
+                  className={constellationMode ? 'active' : ''}
+                  role="radio"
+                  aria-checked={constellationMode}
+                  onClick={() => setConstellationMode(true)}
+                  title="Visualize multiple projects in orbital constellation"
+                >
+                  <Orbit size={12} />
+                  <span>Constellation</span>
+                </button>
+              </div>
+            )}
+
             <button
               className="toolbar-btn"
               title="Fit map in view"
@@ -281,12 +361,11 @@ export function GraphPage() {
                 aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen map'}
                 onClick={() => void toggleFullscreen()}
               >
-                {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
               </button>
             )}
           </div>
 
-          {/* Real File Viewer Modal */}
           <FileViewer />
         </div>
       </section>

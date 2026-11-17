@@ -241,6 +241,141 @@ export default defineConfig({
 `,
 };
 
+const MULTI_DEMO_FILE_CONTENTS: Record<string, string> = {
+  'demo-helios:core/Engine.ts': `import { FrameScheduler } from './FrameScheduler';
+import { ScenePipeline } from '../renderer/ScenePipeline';
+import { BroadphaseGrid } from '../physics/BroadphaseGrid';
+
+export class Engine {
+  private readonly scheduler = new FrameScheduler();
+  private readonly renderer = new ScenePipeline();
+  private readonly physics = new BroadphaseGrid(4.0);
+  private running = false;
+
+  start(): void {
+    this.running = true;
+    this.scheduler.schedule('render', (dt) => {
+      if (!this.running) return;
+      this.physics.step(dt);
+      this.renderer.renderFrame(dt);
+    });
+  }
+
+  stop(): void {
+    this.running = false;
+  }
+}
+`,
+  'demo-helios:core/FrameScheduler.ts': `import { EntityRegistry } from './EntityRegistry';
+
+export type FrameTask = (deltaSeconds: number) => void;
+
+export class FrameScheduler {
+  private readonly tasks = new Map<string, FrameTask>();
+  private readonly registry = new EntityRegistry();
+
+  schedule(name: string, task: FrameTask): void {
+    this.tasks.set(name, task);
+  }
+
+  tick(deltaSeconds: number): void {
+    this.registry.flushPending();
+    for (const task of this.tasks.values()) {
+      task(deltaSeconds);
+    }
+  }
+}
+`,
+  'demo-helios:core/EntityRegistry.ts': `import type { FrameScheduler } from './FrameScheduler';
+
+export interface EntityRecord {
+  id: number;
+  archetype: string;
+  active: boolean;
+}
+
+export class EntityRegistry {
+  private entities = new Map<number, EntityRecord>();
+  private nextId = 1;
+  private linkedScheduler?: FrameScheduler;
+
+  attachScheduler(scheduler: FrameScheduler): void {
+    this.linkedScheduler = scheduler;
+  }
+
+  spawn(archetype: string): number {
+    const id = this.nextId++;
+    this.entities.set(id, { id, archetype, active: true });
+    return id;
+  }
+
+  flushPending(): void {
+    void this.linkedScheduler;
+  }
+}
+`,
+  'demo-helios:renderer/ScenePipeline.ts': `import * as THREE from 'three';
+import { CameraRig } from './CameraRig';
+import { InstanceBatch } from './InstanceBatch';
+
+export class ScenePipeline {
+  private readonly scene = new THREE.Scene();
+  private readonly camera = new CameraRig();
+  private readonly instances = new InstanceBatch(1024);
+
+  renderFrame(dt: number): void {
+    this.camera.update(dt);
+    this.instances.syncMatrices();
+    void this.scene;
+  }
+}
+`,
+  'demo-vortex:api/gateway.ts': `import React from 'react';
+import { RouteTable } from './routeTable';
+import { RateLimiter } from './rateLimiter';
+import { TraceCollector } from '../telemetry/traceCollector';
+
+export class VortexGateway {
+  private readonly routes = new RouteTable();
+  private readonly limiter = new RateLimiter({ rpm: 1200 });
+  private readonly telemetry = new TraceCollector('vortex-edge');
+
+  async handle(path: string, token: string): Promise<number> {
+    if (!this.limiter.allow(token)) return 429;
+    this.telemetry.recordHit(path);
+    return this.routes.dispatch(path, token);
+  }
+}
+
+void React;
+`,
+  'demo-vortex:auth/tokenVerifier.ts': `import { z } from 'zod';
+
+const ClaimsSchema = z.object({
+  sub: z.string().min(1),
+  scope: z.array(z.string()),
+  exp: z.number(),
+});
+
+export type VerifiedClaims = z.infer<typeof ClaimsSchema>;
+
+export function verifyAccessToken(raw: unknown): VerifiedClaims {
+  return ClaimsSchema.parse(raw);
+}
+`,
+  'demo-vortex:config/routes.yaml': `gateway:
+  name: vortex-edge
+  port: 8443
+routes:
+  - path: /v1/telemetry
+    auth: required
+    rate_limit_rpm: 1200
+  - path: /v1/topology
+    auth: required
+    rate_limit_rpm: 600
+`,
+};
+
 /**
  * Safely reads a local or demo file for preview
  */
@@ -292,7 +427,8 @@ export async function readProjectFile(
 
   // 6. Handle Demo project
   if (project.source === 'demo') {
-    const demoContent = DEMO_FILE_CONTENTS[normalizedPath];
+    const scopedContent = MULTI_DEMO_FILE_CONTENTS[`${project.id}:${normalizedPath}`];
+    const demoContent = scopedContent ?? (project.id === 'demo-atlas' ? DEMO_FILE_CONTENTS[normalizedPath] : undefined);
     if (demoContent !== undefined) {
       return {
         content: demoContent,

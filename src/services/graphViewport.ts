@@ -253,55 +253,62 @@ export function resolveBoundedHoverDependencies(
   const limit = options.limit ?? MAX_VISIBLE_DEPENDENCY_EDGES;
   const { hoveredNodeId, selectedNodeId, focusNodeId } = options;
 
-  const chosenEdges: ViewportDependencyEdge[] = [];
-  const seenIds = new Set<string>();
+  let chosenEdges: ViewportDependencyEdge[];
+  const hoveredCandidates = hoveredNodeId
+    ? viewport.hoverDependencyCandidatesByNodeId.get(hoveredNodeId)
+    : undefined;
 
-  const addEdge = (vDep: ViewportDependencyEdge) => {
-    if (chosenEdges.length >= limit) return;
-    if (!seenIds.has(vDep.id)) {
-      seenIds.add(vDep.id);
-      chosenEdges.push(vDep);
-    }
-  };
+  if (hoveredCandidates && hoveredCandidates.length >= limit) {
+    chosenEdges = hoveredCandidates.length === limit ? hoveredCandidates.slice() : hoveredCandidates.slice(0, limit);
+  } else {
+    chosenEdges = [];
+    const seenIds = new Set<string>();
 
-  // 1. Hovered node candidates (at most 60)
-  if (hoveredNodeId) {
-    const hoveredCandidates = viewport.hoverDependencyCandidatesByNodeId.get(hoveredNodeId);
     if (hoveredCandidates) {
-      for (const edge of hoveredCandidates) {
-        addEdge(edge);
-        if (chosenEdges.length >= limit) break;
+      for (let i = 0; i < hoveredCandidates.length && chosenEdges.length < limit; i += 1) {
+        const edge = hoveredCandidates[i];
+        if (!seenIds.has(edge.id)) {
+          seenIds.add(edge.id);
+          chosenEdges.push(edge);
+        }
       }
     }
-  }
 
-  // 2. Selected node candidates (at most 60)
-  if (selectedNodeId && chosenEdges.length < limit) {
-    const selectedCandidates = viewport.hoverDependencyCandidatesByNodeId.get(selectedNodeId);
-    if (selectedCandidates) {
-      for (const edge of selectedCandidates) {
-        addEdge(edge);
-        if (chosenEdges.length >= limit) break;
+    if (selectedNodeId && chosenEdges.length < limit) {
+      const selectedCandidates = viewport.hoverDependencyCandidatesByNodeId.get(selectedNodeId);
+      if (selectedCandidates) {
+        for (let i = 0; i < selectedCandidates.length && chosenEdges.length < limit; i += 1) {
+          const edge = selectedCandidates[i];
+          if (!seenIds.has(edge.id)) {
+            seenIds.add(edge.id);
+            chosenEdges.push(edge);
+          }
+        }
       }
     }
-  }
 
-  // 3. Focus node candidates (at most 60)
-  if (focusNodeId && chosenEdges.length < limit) {
-    const focusCandidates = viewport.hoverDependencyCandidatesByNodeId.get(focusNodeId);
-    if (focusCandidates) {
-      for (const edge of focusCandidates) {
-        addEdge(edge);
-        if (chosenEdges.length >= limit) break;
+    if (focusNodeId && chosenEdges.length < limit) {
+      const focusCandidates = viewport.hoverDependencyCandidatesByNodeId.get(focusNodeId);
+      if (focusCandidates) {
+        for (let i = 0; i < focusCandidates.length && chosenEdges.length < limit; i += 1) {
+          const edge = focusCandidates[i];
+          if (!seenIds.has(edge.id)) {
+            seenIds.add(edge.id);
+            chosenEdges.push(edge);
+          }
+        }
       }
     }
-  }
 
-  // 4. Base deterministic remainder (at most 60)
-  if (chosenEdges.length < limit) {
-    for (const edge of viewport.baseDependencyEdges) {
-      addEdge(edge);
-      if (chosenEdges.length >= limit) break;
+    if (chosenEdges.length < limit) {
+      const base = viewport.baseDependencyEdges;
+      for (let i = 0; i < base.length && chosenEdges.length < limit; i += 1) {
+        const edge = base[i];
+        if (!seenIds.has(edge.id)) {
+          seenIds.add(edge.id);
+          chosenEdges.push(edge);
+        }
+      }
     }
   }
 
@@ -309,20 +316,23 @@ export function resolveBoundedHoverDependencies(
   const visibleOutgoingByNodeId = new Map<string, ViewportDependencyEdge[]>();
   const visibleIncomingByNodeId = new Map<string, ViewportDependencyEdge[]>();
 
-  for (const vDep of chosenEdges) {
+  for (let i = 0; i < chosenEdges.length; i += 1) {
+    const vDep = chosenEdges[i];
     let outList = visibleOutgoingByNodeId.get(vDep.sourceId);
     if (!outList) {
-      outList = [];
+      outList = [vDep];
       visibleOutgoingByNodeId.set(vDep.sourceId, outList);
+    } else {
+      outList.push(vDep);
     }
-    outList.push(vDep);
 
     let inList = visibleIncomingByNodeId.get(vDep.targetId);
     if (!inList) {
-      inList = [];
+      inList = [vDep];
       visibleIncomingByNodeId.set(vDep.targetId, inList);
+    } else {
+      inList.push(vDep);
     }
-    inList.push(vDep);
   }
 
   return {
@@ -642,37 +652,47 @@ export function computeGraphViewport({
     const z3D = Math.sin(angle3D) * base3DRadius;
     positions3D.set(child.id, [x3D, lift3D, z3D]);
 
-    // If expanded, fan out branch children in its sector
+    // If expanded, fan out branch children in its sector without overlapping sibling folders
     if (child.kind === 'directory' && expandedNodeIds.has(child.id)) {
       const branchItems = visibleBranchChildren.filter((b) => b.parentId === child.id);
       const branchOverflow = overflowNodes.find((o) => o.parentId === child.id);
       const totalBranchSlots = branchItems.length + (branchOverflow ? 1 : 0);
 
       if (totalBranchSlots > 0) {
-        const branch2DRadius = 175;
-        const maxSectorAngle = Math.min(Math.PI * 0.75, (totalBranchSlots * 85) / branch2DRadius);
+        const innerCap = Math.min(totalBranchSlots, 6);
+        const outerCount = Math.max(0, totalBranchSlots - innerCap);
+        const siblingSector = directCount > 1 ? ((Math.PI * 2) / directCount) * 1.15 : Math.PI * 0.85;
+        const maxSectorAngle = Math.max(0.45, Math.min(Math.PI * 0.68, siblingSector));
 
         branchItems.forEach((bChild, bIdx) => {
+          const isOuterBand = bIdx >= innerCap;
+          const bandIndex = isOuterBand ? 1 : 0;
+          const bandSlots = isOuterBand ? outerCount : innerCap;
+          const indexInBand = isOuterBand ? bIdx - innerCap : bIdx;
+          const bandRadius2D = isOuterBand ? 285 : 190;
+
           let offsetAngle = 0;
-          if (totalBranchSlots > 1) {
-            offsetAngle = -maxSectorAngle / 2 + (bIdx / (totalBranchSlots - 1)) * maxSectorAngle;
+          if (bandSlots > 1) {
+            const spread = Math.min(maxSectorAngle, (bandSlots * 82) / bandRadius2D);
+            offsetAngle = -spread / 2 + (indexInBand / (bandSlots - 1)) * spread;
           }
           const bAngle = angle + offsetAngle;
-          const bx2D = x2D + Math.cos(bAngle) * branch2DRadius;
-          const by2D = y2D + Math.sin(bAngle) * branch2DRadius;
-          positions2D.set(bChild.id, { x: bx2D, y: by2D, angle: bAngle });
+          const bx2D = x2D + Math.cos(bAngle) * bandRadius2D;
+          const by2D = y2D + Math.sin(bAngle) * bandRadius2D;
+          positions2D.set(bChild.id, { x: bx2D, y: by2D, angle: bAngle, band: bandIndex });
 
           const bAngle3D = angle3D + bIdx * 0.55;
           const bLift3D = lift3D - 0.45 - bIdx * 0.06;
-          const bx3D = x3D + Math.cos(bAngle3D) * 2.2;
-          const bz3D = z3D + Math.sin(bAngle3D) * 2.2;
+          const bx3D = x3D + Math.cos(bAngle3D) * 2.25;
+          const bz3D = z3D + Math.sin(bAngle3D) * 2.25;
           positions3D.set(bChild.id, [bx3D, bLift3D, bz3D]);
         });
 
         if (branchOverflow) {
-          const overflowAngle = angle + maxSectorAngle / 2;
-          const ox2D = x2D + Math.cos(overflowAngle) * (branch2DRadius + 40);
-          const oy2D = y2D + Math.sin(overflowAngle) * (branch2DRadius + 40);
+          const overflowRadius2D = outerCount > 0 ? 335 : 235;
+          const overflowAngle = angle + maxSectorAngle * 0.35;
+          const ox2D = x2D + Math.cos(overflowAngle) * overflowRadius2D;
+          const oy2D = y2D + Math.sin(overflowAngle) * overflowRadius2D;
           branchOverflow.position2D = {
             x: ox2D,
             y: oy2D,

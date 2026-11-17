@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#A78BFA"/><stop offset="1" stop-color="#6366F1"/></linearGradient></defs>
-  <path fill="url(#g)" d="M32 4 56 18v28L32 60 8 46V18L32 4Zm0 7.5L14.5 21.7v20.6L32 52.5l17.5-10.2V21.7L32 11.5Z"/>
-  <path fill="#8B5CF6" d="m32 18 13 7.5v15L32 48l-13-7.5v-15L32 18Zm0 7-7 4v8l7 4 7-4v-8l-7-4Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect x="4" y="4" width="56" height="56" rx="12" fill="#0B0F17" stroke="#22D3EE" stroke-opacity="0.35" stroke-width="2"/>
+  <path d="M32 10L51 21V43L32 54L13 43V21L32 10Z" stroke="#22D3EE" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M32 19L43.5 25.6V38.4L32 45L20.5 38.4V25.6L32 19Z" fill="#0EA5E9" fill-opacity="0.18" stroke="#38BDF8" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="4.5" fill="#22D3EE"/>
+  <path d="M32 10V19M51 21L43.5 25.6M51 43L43.5 38.4M32 54V45M13 43L20.5 38.4M13 21L20.5 25.6" stroke="#22D3EE" stroke-opacity="0.55" stroke-width="1.5"/>
 </svg>
