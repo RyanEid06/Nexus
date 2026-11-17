@@ -310,6 +310,7 @@ export function ProjectGraph({
   const selectedId = useAppStore((s) => s.selectedNodeId);
   const expandedNodeIds = useAppStore((s) => s.expandedNodeIds);
   const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
+  const mapPageOffset = useAppStore((s) => s.mapPageOffset);
   const setPage = useAppStore((s) => s.setPage);
   const setMapMode = useAppStore((s) => s.setMapMode);
 
@@ -353,8 +354,10 @@ export function ProjectGraph({
       selectedNodeId: selectedId,
       expandedNodeIds,
       relationshipMode,
+      directPageOffset: mapPageOffset,
+      expandedBranchLimit: 15,
     });
-  }, [project, graphIndex, constellationMode, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode]);
+  }, [project, graphIndex, constellationMode, mapFocusNodeId, mapPageOffset, selectedId, expandedNodeIds, relationshipMode]);
 
   const allById = useMemo(
     () => graphIndex?.byId ?? new Map((project?.nodes ?? []).map((node) => [node.id, node])),
@@ -384,8 +387,18 @@ export function ProjectGraph({
   }, [viewport, project, hoveredId, selectedId]);
 
   const activeHighlightedIds = useMemo(() => {
+    if (!viewport || !project) return null;
+    const isHovering = hoveredId !== null;
+    const selectedNode = selectedId ? viewport.visibleNodesMap.get(selectedId) : null;
+    const shouldSpotlightSelection =
+      relationshipMode !== 'hierarchy' || selectedNode?.kind === 'file';
+
+    if (!isHovering && !shouldSpotlightSelection) {
+      return null;
+    }
+
     const targetId = hoveredId ?? selectedId;
-    if (!targetId || !viewport || !project) return null;
+    if (!targetId) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -404,7 +417,7 @@ export function ProjectGraph({
     for (const item of incoming) set.add(item.sourceId);
 
     return set;
-  }, [hoveredId, selectedId, viewport, project, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
+  }, [hoveredId, selectedId, viewport, project, relationshipMode, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
 
   // Persistent Three.js engine refs
   const engineRef = useRef<{
@@ -515,13 +528,35 @@ export function ProjectGraph({
       if (rect.width <= 0 || rect.height <= 0) return;
 
       const nextLabels: ProjectedLabel[] = [];
+      const placedBoxes: Array<{ cx: number; bottomY: number; w: number; h: number }> = [];
+
       for (const target of eng.labelTargets) {
         tempVec.copy(target.position).project(eng.camera);
         if (tempVec.z > 1 || tempVec.z < -1) continue;
         const sx = (tempVec.x * 0.5 + 0.5) * rect.width;
-        const sy = (-tempVec.y * 0.5 + 0.5) * rect.height;
+        let sy = (-tempVec.y * 0.5 + 0.5) * rect.height;
         if (sx < -60 || sx > rect.width + 60 || sy < -30 || sy > rect.height + 30) continue;
 
+        const estW = Math.min(220, Math.max(96, target.text.length * 7.6 + 26));
+        const estH = 40;
+
+        // Nudge upward cleanly if this tag would overlap an earlier placed tag
+        for (let pass = 0; pass < 4; pass += 1) {
+          let hit = false;
+          for (const box of placedBoxes) {
+            const dx = Math.abs(sx - box.cx);
+            const overlapsX = dx < (estW + box.w) * 0.5 + 6;
+            const overlapsY = sy > box.bottomY - box.h - 4 && sy - estH < box.bottomY + 4;
+            if (overlapsX && overlapsY) {
+              sy = box.bottomY - box.h - 8;
+              hit = true;
+              break;
+            }
+          }
+          if (!hit) break;
+        }
+
+        placedBoxes.push({ cx: sx, bottomY: sy, w: estW, h: estH });
         nextLabels.push({
           id: target.id,
           text: target.text,
@@ -670,6 +705,7 @@ export function ProjectGraph({
             nodeId: string;
             sourceNodeId?: string;
             projectId?: string;
+            isBranchOverflow?: boolean;
             kind: 'project' | 'directory' | 'file' | 'overflow' | 'bridge';
           };
         }
@@ -702,8 +738,11 @@ export function ProjectGraph({
       }
 
       if (hit.kind === 'overflow') {
-        store.selectNode(hit.sourceNodeId ?? hit.nodeId);
-        store.setPage('structure');
+        if (hit.isBranchOverflow && hit.sourceNodeId) {
+          store.drillDownNode(hit.sourceNodeId);
+        } else {
+          store.nextMapPage();
+        }
         return;
       }
 
@@ -717,6 +756,9 @@ export function ProjectGraph({
         store.selectNode(hit.sourceNodeId ?? hit.nodeId);
       } else {
         store.selectNode(hit.nodeId);
+        if (hit.kind === 'directory' && hit.nodeId !== store.mapFocusNodeId) {
+          store.previewFolderBranch(hit.nodeId);
+        }
       }
     };
 
@@ -1127,6 +1169,7 @@ export function ProjectGraph({
       ovGroup.userData = {
         nodeId: overflow.id,
         sourceNodeId: overflow.parentId,
+        isBranchOverflow: Boolean(overflow.isBranchOverflow),
         kind: 'overflow',
       };
       eng.contentGroup.add(ovGroup);
@@ -1135,7 +1178,7 @@ export function ProjectGraph({
       eng.labelTargets.push({
         id: overflow.id,
         text: overflow.label,
-        subtext: 'Open Structure',
+        subtext: overflow.isBranchOverflow ? 'Open Sub-Map' : 'Click for next 24',
         position: new THREE.Vector3(pos[0], pos[1] + 0.55, pos[2]),
         selected: false,
         kind: 'overflow',
@@ -1185,7 +1228,7 @@ export function ProjectGraph({
 
     const sig = constellation
       ? `constellation:${constellation.projects.map((p) => p.projectId).join(',')}`
-      : `single:${project?.id ?? ''}:${viewport?.focusNode.id ?? ''}`;
+      : `single:${project?.id ?? ''}:${viewport?.focusNode.id ?? ''}:${mapPageOffset}`;
 
     if (sig !== lastCamFitKeyRef.current) {
       lastCamFitKeyRef.current = sig;
@@ -1217,7 +1260,7 @@ export function ProjectGraph({
 
     window.addEventListener('nexus:map-action' as any, handle3DAction as any);
     return () => window.removeEventListener('nexus:map-action' as any, handle3DAction as any);
-  }, [active, project?.id, viewport?.focusNode.id, constellation]);
+  }, [active, project?.id, viewport?.focusNode.id, mapPageOffset, constellation]);
 
   if (hasWebGLError) {
     return (

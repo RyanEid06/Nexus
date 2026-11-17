@@ -12,6 +12,7 @@ export interface HistoryEntry {
   mapMode: MapMode;
   projectId?: string;
   constellationMode?: boolean;
+  mapPageOffset?: number;
 }
 
 interface AppState {
@@ -22,6 +23,7 @@ interface AppState {
   constellationMode: boolean;
   selectedNodeId: string | null;
   mapFocusNodeId: string | null;
+  mapPageOffset: number;
   mapMode: MapMode;
   relationshipMode: RelationshipFilterMode;
   expandedNodeIds: Set<string>;
@@ -41,6 +43,10 @@ interface AppState {
   clearProject: () => void;
   selectNode: (id: string | null, recordHistory?: boolean) => void;
   setMapFocusNodeId: (id: string | null, recordHistory?: boolean) => void;
+  setMapPageOffset: (offset: number) => void;
+  nextMapPage: () => void;
+  prevMapPage: () => void;
+  previewFolderBranch: (id: string) => void;
   drillDownNode: (id: string) => void;
   navigateUpToParentFocus: () => void;
   revealNodeOnMap: (nodeId: string) => void;
@@ -59,6 +65,11 @@ interface AppState {
 
 const MAX_HISTORY = 50;
 const MAX_WORKSPACE_PROJECTS = 6;
+const MAP_PAGE_SIZE = 24;
+
+function getRootNodeId(project: ProjectIndex): string | null {
+  return (project.nodes.find((n) => n.kind === 'project') ?? project.nodes[0])?.id ?? null;
+}
 
 function upsertWorkspaceProject(list: ProjectIndex[], incoming: ProjectIndex): ProjectIndex[] {
   const existingIdx = list.findIndex((p) => p.id === incoming.id);
@@ -86,7 +97,8 @@ function pushHistoryEntry(
     lastEntry.previewFileId === newEntry.previewFileId &&
     lastEntry.mapMode === newEntry.mapMode &&
     lastEntry.projectId === newEntry.projectId &&
-    Boolean(lastEntry.constellationMode) === Boolean(newEntry.constellationMode)
+    Boolean(lastEntry.constellationMode) === Boolean(newEntry.constellationMode) &&
+    (lastEntry.mapPageOffset ?? 0) === (newEntry.mapPageOffset ?? 0)
   ) {
     return { navigationHistory: currentHistory, historyIndex: currentHistory.length - 1 };
   }
@@ -106,6 +118,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   constellationMode: false,
   selectedNodeId: null,
   mapFocusNodeId: null,
+  mapPageOffset: 0,
   mapMode: '2d',
   relationshipMode: 'hierarchy',
   expandedNodeIds: new Set<string>(),
@@ -141,7 +154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setProject: (project) => {
     const state = get();
-    const rootId = project.nodes[0]?.id ?? null;
+    const rootId = getRootNodeId(project);
     // Start with a clean, unexploded overview with only root expanded.
     const initialExpanded = new Set<string>();
     if (rootId) {
@@ -177,6 +190,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       relationshipMode: 'hierarchy',
       selectedNodeId: rootId,
       mapFocusNodeId: rootId,
+      mapPageOffset: 0,
       previewFileId: null,
       expandedNodeIds: initialExpanded,
       navigationHistory: initialHistory,
@@ -202,7 +216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const target = state.workspaceProjects.find((p) => p.id === projectId);
     if (!target) return;
 
-    const rootId = target.nodes[0]?.id ?? null;
+    const rootId = getRootNodeId(target);
     const nextExpanded = new Set<string>();
     if (rootId) nextExpanded.add(rootId);
 
@@ -219,6 +233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         mapMode: state.mapMode,
         projectId: target.id,
         constellationMode: false,
+        mapPageOffset: 0,
       }
     );
 
@@ -228,6 +243,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       page: resolvedPage,
       selectedNodeId: rootId,
       mapFocusNodeId: rootId,
+      mapPageOffset: 0,
       previewFileId: null,
       expandedNodeIds: nextExpanded,
       navigationHistory,
@@ -249,12 +265,13 @@ export const useAppStore = create<AppState>((set, get) => ({
             constellationMode: false,
             selectedNodeId: null,
             mapFocusNodeId: null,
+            mapPageOffset: 0,
             previewFileId: null,
             expandedNodeIds: new Set(),
             page: 'projects',
           };
         }
-        const rootId = fallback.nodes[0]?.id ?? null;
+        const rootId = getRootNodeId(fallback);
         return {
           project: fallback,
           workspaceProjects: nextWorkspace,
@@ -262,6 +279,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           constellationMode: nextConstellationIds.length >= 2 ? state.constellationMode : false,
           selectedNodeId: rootId,
           mapFocusNodeId: rootId,
+          mapPageOffset: 0,
           previewFileId: null,
           expandedNodeIds: new Set(rootId ? [rootId] : []),
         };
@@ -324,7 +342,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   launchConstellation: (projects, activeProjectId) => {
     if (projects.length === 0) return;
     const active = (activeProjectId ? projects.find((p) => p.id === activeProjectId) : null) ?? projects[0];
-    const rootId = active.nodes[0]?.id ?? null;
+    const rootId = getRootNodeId(active);
     const initialExpanded = new Set<string>(rootId ? [rootId] : []);
 
     let mergedWorkspace = get().workspaceProjects;
@@ -353,6 +371,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       page: 'graph',
       selectedNodeId: rootId,
       mapFocusNodeId: rootId,
+      mapPageOffset: 0,
       previewFileId: null,
       expandedNodeIds: initialExpanded,
       navigationHistory: [entry],
@@ -368,6 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       constellationMode: false,
       selectedNodeId: null,
       mapFocusNodeId: null,
+      mapPageOffset: 0,
       previewFileId: null,
       mapMode: '2d',
       relationshipMode: 'hierarchy',
@@ -380,7 +400,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setMapFocusNodeId: (mapFocusNodeId, recordHistory = true) => {
     const state = get();
-    if (state.mapFocusNodeId === mapFocusNodeId) return;
+    if (state.mapFocusNodeId === mapFocusNodeId && state.mapPageOffset === 0) return;
 
     if (recordHistory) {
       const { navigationHistory, historyIndex } = pushHistoryEntry(
@@ -394,12 +414,68 @@ export const useAppStore = create<AppState>((set, get) => ({
           mapMode: state.mapMode,
           projectId: state.project?.id,
           constellationMode: state.constellationMode,
+          mapPageOffset: 0,
         }
       );
-      set({ mapFocusNodeId, navigationHistory, historyIndex });
+      set({ mapFocusNodeId, mapPageOffset: 0, navigationHistory, historyIndex });
     } else {
-      set({ mapFocusNodeId });
+      set({ mapFocusNodeId, mapPageOffset: 0 });
     }
+  },
+
+  setMapPageOffset: (offset) => {
+    const state = get();
+    if (!state.project) return;
+    const focusId = state.mapFocusNodeId ?? getRootNodeId(state.project);
+    const totalDirect = focusId ? state.project.nodes.filter((n) => n.parentId === focusId).length : 0;
+    const maxOffset = Math.max(0, Math.floor(Math.max(0, totalDirect - 1) / MAP_PAGE_SIZE) * MAP_PAGE_SIZE);
+    const snapped = Math.max(0, Math.min(Math.floor(offset / MAP_PAGE_SIZE) * MAP_PAGE_SIZE, maxOffset));
+    if (snapped === state.mapPageOffset) return;
+    set({ mapPageOffset: snapped });
+  },
+
+  nextMapPage: () => {
+    const state = get();
+    if (!state.project) return;
+    const focusId = state.mapFocusNodeId ?? getRootNodeId(state.project);
+    const totalDirect = focusId ? state.project.nodes.filter((n) => n.parentId === focusId).length : 0;
+    const nextOffset = state.mapPageOffset + MAP_PAGE_SIZE;
+    if (nextOffset >= totalDirect) {
+      set({ mapPageOffset: 0 });
+    } else {
+      set({ mapPageOffset: nextOffset });
+    }
+  },
+
+  prevMapPage: () => {
+    const state = get();
+    if (!state.project) return;
+    const prevOffset = Math.max(0, state.mapPageOffset - MAP_PAGE_SIZE);
+    if (prevOffset !== state.mapPageOffset) {
+      set({ mapPageOffset: prevOffset });
+    }
+  },
+
+  previewFolderBranch: (id: string) => {
+    const state = get();
+    if (!state.project) return;
+    const focusId = state.mapFocusNodeId ?? getRootNodeId(state.project);
+    const byId = new Map(state.project.nodes.map((n) => [n.id, n]));
+    const target = byId.get(id);
+    if (!target || target.kind !== 'directory') return;
+
+    // Preserve focus node and ancestors; expand ONLY this clicked folder branch for clean preview
+    const nextExpanded = new Set<string>();
+    let curr: typeof target | undefined = focusId ? byId.get(focusId) : undefined;
+    while (curr) {
+      nextExpanded.add(curr.id);
+      curr = curr.parentId ? byId.get(curr.parentId) : undefined;
+    }
+    if (id !== focusId) {
+      nextExpanded.add(id);
+    }
+
+    set({ expandedNodeIds: nextExpanded });
   },
 
   drillDownNode: (id) => {
@@ -408,8 +484,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!node) return;
 
     if (node.kind === 'directory' || node.kind === 'project') {
-      const nextExpanded = new Set(state.expandedNodeIds);
-      nextExpanded.add(id);
+      const nextExpanded = new Set<string>();
+      const byId = new Map(state.project!.nodes.map((n) => [n.id, n]));
+      let curr: typeof node | undefined = node;
+      while (curr) {
+        nextExpanded.add(curr.id);
+        curr = curr.parentId ? byId.get(curr.parentId) : undefined;
+      }
 
       const { navigationHistory, historyIndex } = pushHistoryEntry(
         state.navigationHistory,
@@ -422,12 +503,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           mapMode: state.mapMode,
           projectId: state.project?.id,
           constellationMode: false,
+          mapPageOffset: 0,
         }
       );
 
       set({
         constellationMode: false,
         mapFocusNodeId: id,
+        mapPageOffset: 0,
         selectedNodeId: id,
         expandedNodeIds: nextExpanded,
         navigationHistory,
@@ -455,11 +538,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           mapMode: state.mapMode,
           projectId: state.project?.id,
           constellationMode: state.constellationMode,
+          mapPageOffset: 0,
         }
       );
 
       set({
         mapFocusNodeId: parentId,
+        mapPageOffset: 0,
         selectedNodeId: parentId,
         navigationHistory,
         historyIndex,
@@ -474,7 +559,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const node = nodesById.get(nodeId);
     if (!node) return;
 
-    const rootId = state.project.nodes[0]?.id ?? null;
+    const rootId = getRootNodeId(state.project);
     const nextExpanded = new Set(state.expandedNodeIds);
 
     let curr = node.parentId ? nodesById.get(node.parentId) : undefined;
@@ -507,6 +592,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         mapMode: state.mapMode,
         projectId: state.project?.id,
         constellationMode: false,
+        mapPageOffset: 0,
       }
     );
 
@@ -514,6 +600,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       constellationMode: false,
       selectedNodeId: node.id,
       mapFocusNodeId: targetFocusId,
+      mapPageOffset: 0,
       page: 'graph',
       previewFileId: null,
       expandedNodeIds: nextExpanded,
@@ -666,6 +753,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           project: restoredProject,
           selectedNodeId: entry.nodeId,
           mapFocusNodeId: entry.mapFocusNodeId,
+          mapPageOffset: entry.mapPageOffset ?? 0,
           page: entry.page,
           previewFileId: entry.previewFileId,
           mapMode: entry.mapMode,
@@ -689,6 +777,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           project: restoredProject,
           selectedNodeId: entry.nodeId,
           mapFocusNodeId: entry.mapFocusNodeId,
+          mapPageOffset: entry.mapPageOffset ?? 0,
           page: entry.page,
           previewFileId: entry.previewFileId,
           mapMode: entry.mapMode,

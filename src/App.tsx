@@ -7,6 +7,7 @@ import { AnalyticsPage } from './components/AnalyticsPage';
 import { DependenciesPage } from './components/DependenciesPage';
 import { SearchPage } from './components/SearchPage';
 import { SettingsPage } from './components/SettingsPage';
+import { OfflineIndicator } from './components/PWAInstallButton';
 import { useAppStore } from './store/useAppStore';
 
 
@@ -45,5 +46,17 @@ export default function App() {
   const protectedPage = page !== 'projects' && page !== 'settings';
   const effectivePage = protectedPage && !project ? 'projects' : page;
 
-  return <div className="app-shell"><Sidebar/>{effectivePage === 'projects' && <ProjectsPage/>}{effectivePage === 'graph' && project && <GraphPage/>}{effectivePage === 'structure' && project && <StructurePage/>}{effectivePage === 'analytics' && project && <AnalyticsPage/>}{effectivePage === 'dependencies' && project && <DependenciesPage/>}{effectivePage === 'search' && project && <SearchPage/>}{effectivePage === 'settings' && <SettingsPage/>}</div>;
+  return (
+    <div className="app-shell">
+      <OfflineIndicator />
+      <Sidebar />
+      {effectivePage === 'projects' && <ProjectsPage />}
+      {effectivePage === 'graph' && project && <GraphPage />}
+      {effectivePage === 'structure' && project && <StructurePage />}
+      {effectivePage === 'analytics' && project && <AnalyticsPage />}
+      {effectivePage === 'dependencies' && project && <DependenciesPage />}
+      {effectivePage === 'search' && project && <SearchPage />}
+      {effectivePage === 'settings' && <SettingsPage />}
+    </div>
+  );
 }

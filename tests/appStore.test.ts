@@ -528,6 +528,50 @@ describe('App Store & Graph State', () => {
       expect(useAppStore.getState().mapFocusNodeId).toBe('src');
       expect(useAppStore.getState().mapMode).toBe('3d');
     });
+
+    it('previewFolderBranch activates one sibling branch cleanly and drillDownNode opens nested sub-map resetting pagination', () => {
+      const manyFiles: ProjectNode[] = Array.from({ length: 60 }, (_, i) => ({
+        id: `big_file_${i}`,
+        projectId: 'big-folder-proj',
+        parentId: 'd_server',
+        name: `handler_${i}.ts`,
+        path: `server/handler_${i}.ts`,
+        kind: 'file',
+        sizeBytes: 100,
+        loc: 50,
+        depth: 2,
+      }));
+      const branchProject: ProjectIndex = {
+        ...multiBranchProject,
+        id: 'big-folder-proj',
+        nodes: [...multiBranchProject.nodes, ...manyFiles],
+      };
+
+      useAppStore.getState().setProject(branchProject);
+      useAppStore.getState().previewFolderBranch('d_src');
+      expect(useAppStore.getState().expandedNodeIds.has('d_src')).toBe(true);
+
+      // Previewing another sibling replaces the inline branch preview cleanly
+      useAppStore.getState().previewFolderBranch('d_server');
+      expect(useAppStore.getState().expandedNodeIds.has('d_server')).toBe(true);
+      expect(useAppStore.getState().expandedNodeIds.has('d_src')).toBe(false);
+
+      // Drill down into d_server -> sub-map centered on d_server with pagination
+      useAppStore.getState().drillDownNode('d_server');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_server');
+      expect(useAppStore.getState().mapPageOffset).toBe(0);
+
+      useAppStore.getState().nextMapPage();
+      expect(useAppStore.getState().mapPageOffset).toBe(24);
+      useAppStore.getState().prevMapPage();
+      expect(useAppStore.getState().mapPageOffset).toBe(0);
+
+      // Drilling deeper into d_database opens nested sub-map-into-sub-map & resets page
+      useAppStore.getState().nextMapPage();
+      useAppStore.getState().drillDownNode('d_database');
+      expect(useAppStore.getState().mapFocusNodeId).toBe('d_database');
+      expect(useAppStore.getState().mapPageOffset).toBe(0);
+    });
   });
 });
 

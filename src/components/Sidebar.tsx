@@ -2,6 +2,7 @@ import { Boxes, FileSearch, Folder, FolderKanban, Layers, Settings, ShieldCheck,
 import { CURATED_SAMPLE_PROJECTS } from '../data/sampleProjects';
 import { useAppStore } from '../store/useAppStore';
 import { Brand } from './Brand';
+import { PWAInstallButton } from './PWAInstallButton';
 
 export function Sidebar() {
   const page = useAppStore((s) => s.page);
@@ -15,9 +16,10 @@ export function Sidebar() {
   const launchConstellation = useAppStore((s) => s.launchConstellation);
   const revealNodeOnMap = useAppStore((s) => s.revealNodeOnMap);
 
+  const rootNode = project ? (project.nodes.find((n) => n.kind === 'project') ?? project.nodes[0]) : undefined;
   const allTopFolders =
     project?.nodes.filter(
-      (node) => node.parentId === project.nodes[0]?.id && node.kind === 'directory'
+      (node) => node.parentId === rootNode?.id && node.kind === 'directory'
     ) ?? [];
 
   const visibleFolders = allTopFolders.slice(0, 8);
@@ -100,8 +102,8 @@ export function Sidebar() {
           <button
             className="project-root-link"
             onClick={() => {
-              if (project.nodes[0]) {
-                revealNodeOnMap(project.nodes[0].id);
+              if (rootNode) {
+                revealNodeOnMap(rootNode.id);
               }
             }}
           >
@@ -150,6 +152,8 @@ export function Sidebar() {
           <span>Settings</span>
         </button>
       </nav>
+
+      <PWAInstallButton />
 
       <div className="local-status">
         <div className="local-status-title">

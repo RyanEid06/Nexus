@@ -12,8 +12,10 @@ export const MAX_VISIBLE_DEPENDENCY_EDGES = 60;
 export interface ViewportOverflowNode {
   id: string;
   parentId: string;
+  parentName?: string;
   kind: 'overflow';
   overflowType: 'all' | 'directories' | 'files';
+  isBranchOverflow?: boolean;
   hiddenCount: number;
   totalChildrenCount: number;
   label: string;
@@ -62,10 +64,18 @@ export interface GraphViewportModel {
   hoverDependencyCandidatesByNodeId: Map<string, ViewportDependencyEdge[]>;
   baseDependencyEdges: ViewportDependencyEdge[];
 
-  // Statistics
+  // Statistics & Pagination
   totalDirectChildren: number;
   visibleDirectChildren: number;
   hiddenDirectChildren: number;
+  directPageOffset: number;
+  directPageSize: number;
+  currentDirectPage: number;
+  totalDirectPages: number;
+  hasPrevDirectPage: boolean;
+  hasNextDirectPage: boolean;
+  directPageStart: number;
+  directPageEnd: number;
 
   // Dependency metrics
   totalDependenciesInScope: number;
@@ -173,6 +183,8 @@ export function buildGraphIndex(project: ProjectIndex): ProjectGraphIndex {
   return index;
 }
 
+const nameCollator = new Intl.Collator();
+
 /**
  * Deterministically sorts child nodes:
  * 1. Directories before files
@@ -201,7 +213,7 @@ export function prioritizeChildren(children: ProjectNode[]): ProjectNode[] {
     }
 
     // 4. Stable alphabetical tie-breaking
-    return a.name.localeCompare(b.name);
+    return nameCollator.compare(a.name, b.name);
   });
 }
 
@@ -213,6 +225,8 @@ export interface ComputeViewportOptions {
   expandedNodeIds: ReadonlySet<string>;
   relationshipMode?: RelationshipFilterMode;
   hoveredNodeId?: string | null;
+  directPageOffset?: number;
+  expandedBranchLimit?: number;
 }
 
 export interface PrioritizeDependencyOptions {
@@ -430,12 +444,14 @@ export function computeGraphViewport({
   expandedNodeIds,
   relationshipMode = 'hierarchy',
   hoveredNodeId = null,
+  directPageOffset = 0,
+  expandedBranchLimit,
 }: ComputeViewportOptions): GraphViewportModel {
   const index = graphIndex ?? buildGraphIndex(project);
   const { byId, rootNode } = index;
 
   // 1. Resolve Focus Node & Breadcrumb Trail
-  let focusNode = (mapFocusNodeId ? byId.get(mapFocusNodeId) : null) ?? rootNode;
+  const focusNode = (mapFocusNodeId ? byId.get(mapFocusNodeId) : null) ?? rootNode;
 
   // Check if selectedNodeId is a descendant of focusNode
   const selNode = selectedNodeId ? byId.get(selectedNodeId) : null;
@@ -487,35 +503,47 @@ export function computeGraphViewport({
 
   const directPathChild = selectedPathNodes.length > 0 ? selectedPathNodes[0] : null;
 
-  // Step 3: Direct Children of Focus Node (Pre-sorted in index, NO repeated sorting)
+  // Step 3: Direct Children of Focus Node (Pre-sorted in index, paginated cleanly for large folders)
   const sortedDirectChildren = index.prioritizedChildrenByParentId.get(focusNode.id) ?? [];
   const totalDirectChildren = sortedDirectChildren.length;
+  const pageSize = MAX_DIRECT_REAL_CHILDREN;
+  const totalDirectPages = Math.max(1, Math.ceil(totalDirectChildren / pageSize));
+  const maxValidOffset = Math.max(0, (totalDirectPages - 1) * pageSize);
+  const safeOffset = Math.max(0, Math.min(Math.floor(directPageOffset / pageSize) * pageSize, maxValidOffset));
+  const currentDirectPage = Math.floor(safeOffset / pageSize) + 1;
+  const hasPrevDirectPage = safeOffset > 0;
+  const hasNextDirectPage = safeOffset + pageSize < totalDirectChildren;
+
+  const pagedSlice = sortedDirectChildren.slice(safeOffset, safeOffset + pageSize);
+  const directPathInPage = Boolean(directPathChild && pagedSlice.some((c) => c.id === directPathChild.id));
 
   const visibleDirectChildrenList: ProjectNode[] = [];
-
-  if (directPathChild) {
+  if (directPathChild && !directPathInPage) {
     visibleDirectChildrenList.push(directPathChild);
   }
 
-  // Allocate remaining capacity to direct children (up to MAX_DIRECT_REAL_CHILDREN)
-  const maxOtherDirectSlots = Math.max(
-    0,
-    Math.min(MAX_DIRECT_REAL_CHILDREN - (directPathChild ? 1 : 0), budgetRemaining)
-  );
-  const targetDirectSlots = directPathChild ? maxOtherDirectSlots + 1 : maxOtherDirectSlots;
-
-  for (const child of sortedDirectChildren) {
-    if (visibleDirectChildrenList.length >= targetDirectSlots) break;
-    if (directPathChild && child.id === directPathChild.id) continue;
+  // Allocate remaining capacity to paged direct children (up to MAX_DIRECT_REAL_CHILDREN)
+  const maxDirectTotal = Math.min(MAX_DIRECT_REAL_CHILDREN, budgetRemaining + (directPathChild ? 1 : 0));
+  for (const child of pagedSlice) {
+    if (visibleDirectChildrenList.length >= maxDirectTotal) break;
+    if (directPathChild && !directPathInPage && child.id === directPathChild.id) continue;
     visibleDirectChildrenList.push(child);
-    budgetRemaining -= 1;
+    if (!(directPathChild && child.id === directPathChild.id)) {
+      budgetRemaining = Math.max(0, budgetRemaining - 1);
+    }
   }
 
-  const hiddenDirectChildren = totalDirectChildren - visibleDirectChildrenList.length;
+  const hiddenDirectChildren = Math.max(0, totalDirectChildren - visibleDirectChildrenList.length);
+  const directPageStart = totalDirectChildren === 0 ? 0 : safeOffset + 1;
+  const directPageEnd = Math.min(totalDirectChildren, safeOffset + pagedSlice.length);
 
-  // Step 4: Expanded Child Branches (Pre-sorted in index, NO repeated sorting)
+  // Step 4: Expanded Child Branches (Pre-sorted in index, bounded by expandedBranchLimit / 20)
+  const effectiveBranchCap = Math.max(
+    1,
+    Math.min(MAX_EXPANDED_BRANCH_CHILDREN, expandedBranchLimit ?? MAX_EXPANDED_BRANCH_CHILDREN)
+  );
   const visibleBranchChildren: ProjectNode[] = [];
-  const branchOverflowMap = new Map<string, { hiddenCount: number; totalCount: number }>();
+  const branchOverflowMap = new Map<string, { hiddenCount: number; totalCount: number; parentName: string }>();
 
   for (const child of visibleDirectChildrenList) {
     if (child.kind === 'directory' && expandedNodeIds.has(child.id)) {
@@ -523,12 +551,10 @@ export function computeGraphViewport({
       const totalBranch = sortedBranch.length;
       if (totalBranch === 0) continue;
 
-      // Check if any selectedPathNode is a direct child of this directory
       const pathBranchChild = selectedPathNodes.find((p) => p.parentId === child.id);
-
       const maxBranchSlots = Math.max(
         0,
-        Math.min(MAX_EXPANDED_BRANCH_CHILDREN - (pathBranchChild ? 1 : 0), budgetRemaining)
+        Math.min(effectiveBranchCap - (pathBranchChild ? 1 : 0), budgetRemaining)
       );
 
       const branchShown: ProjectNode[] = [];
@@ -548,6 +574,7 @@ export function computeGraphViewport({
         branchOverflowMap.set(child.id, {
           hiddenCount: totalBranch - branchShown.length,
           totalCount: totalBranch,
+          parentName: child.name,
         });
       }
 
@@ -563,7 +590,6 @@ export function computeGraphViewport({
   for (const node of selectedPathNodes) visibleNodesSet.add(node);
 
   const visibleNodes = Array.from(visibleNodesSet);
-  // Strict guarantee: visibleNodes.length <= MAX_GRAPH_REAL_NODES
   if (visibleNodes.length > MAX_GRAPH_REAL_NODES) {
     visibleNodes.splice(MAX_GRAPH_REAL_NODES);
   }
@@ -572,7 +598,6 @@ export function computeGraphViewport({
   // Step 6: Overflow Aggregates
   const overflowNodes: ViewportOverflowNode[] = [];
 
-  // Focus direct children overflow indicator
   if (hiddenDirectChildren > 0) {
     const totalDirs = index.directoryCountByParentId?.get(focusNode.id) ?? 0;
     const totalFiles = totalDirectChildren - totalDirs;
@@ -588,7 +613,11 @@ export function computeGraphViewport({
     const hiddenFiles = Math.max(0, totalFiles - visibleFiles);
 
     let label = `+ ${hiddenDirectChildren.toLocaleString()} more`;
-    if (hiddenDirs > 0 && hiddenFiles > 0) {
+    if (safeOffset > 0) {
+      label = hasNextDirectPage
+        ? `Page ${currentDirectPage}/${totalDirectPages} · Next ${Math.min(pageSize, totalDirectChildren - directPageEnd)} →`
+        : `Page ${currentDirectPage}/${totalDirectPages} · Back to 1`;
+    } else if (hiddenDirs > 0 && hiddenFiles > 0) {
       label = `+ ${hiddenDirs.toLocaleString()} dirs, ${hiddenFiles.toLocaleString()} files`;
     } else if (hiddenDirs > 0) {
       label = `+ ${hiddenDirs.toLocaleString()} more folders`;
@@ -599,8 +628,10 @@ export function computeGraphViewport({
     overflowNodes.push({
       id: `${focusNode.id}__overflow`,
       parentId: focusNode.id,
+      parentName: focusNode.name,
       kind: 'overflow',
       overflowType: hiddenDirs > 0 && hiddenFiles === 0 ? 'directories' : hiddenFiles > 0 && hiddenDirs === 0 ? 'files' : 'all',
+      isBranchOverflow: false,
       hiddenCount: hiddenDirectChildren,
       totalChildrenCount: totalDirectChildren,
       label,
@@ -609,134 +640,184 @@ export function computeGraphViewport({
     });
   }
 
-  // Branch overflows
-  for (const [branchParentId, { hiddenCount, totalCount }] of branchOverflowMap.entries()) {
+  for (const [branchParentId, { hiddenCount, totalCount, parentName }] of branchOverflowMap.entries()) {
     overflowNodes.push({
       id: `${branchParentId}__overflow`,
       parentId: branchParentId,
+      parentName,
       kind: 'overflow',
       overflowType: 'all',
+      isBranchOverflow: true,
       hiddenCount,
       totalChildrenCount: totalCount,
-      label: `+ ${hiddenCount.toLocaleString()} more`,
+      label: `+ ${hiddenCount.toLocaleString()} more · Sub-Map`,
       position2D: { x: 0, y: 0, angle: 0 },
       position3D: [0, 0, 0],
     });
   }
 
-  // Step 7: Deterministic 2D & 3D Coordinates (Every single visible node is guaranteed valid coordinates)
+  // Step 7: Collision-Free Dual-Ring & Outward Satellite Coordinates (2D & 3D)
   const positions2D = new Map<string, Node2DPosition>();
   const positions3D = new Map<string, [number, number, number]>();
 
-  // Center focus node at (0, 0) in 2D and (0, 0, 0) in 3D
+  // Center focus node at (0, 0)
   positions2D.set(focusNode.id, { x: 0, y: 0, angle: 0 });
   positions3D.set(focusNode.id, [0, 0, 0]);
 
-  // Direct children placement
-  const directCount = visibleDirectChildrenList.length + (hiddenDirectChildren > 0 ? 1 : 0);
-  const minArcSpacing = 145;
-  const circumferenceNeeded = directCount * minArcSpacing;
-  const radiusFromCount = circumferenceNeeded / (2 * Math.PI);
-  const base2DRadius = Math.max(directCount <= 6 ? 260 : directCount <= 12 ? 310 : 360, radiusFromCount);
-  const base3DRadius = Math.max(3.2, 2.6 * Math.sqrt(Math.max(1, directCount) * 0.18) + 2.2);
+  const directOverflow = overflowNodes.find((o) => !o.isBranchOverflow && o.parentId === focusNode.id);
+  const directSlotCount = visibleDirectChildrenList.length + (directOverflow ? 1 : 0);
+
+  // Use dual concentric rings whenever > 10 items are around focus so neighboring cards never overlap
+  const useDualRing = directSlotCount > 10;
+  const tier1Cap = useDualRing ? Math.min(10, visibleDirectChildrenList.length) : visibleDirectChildrenList.length;
+  const tier2ChildrenCount = useDualRing ? Math.max(0, visibleDirectChildrenList.length - tier1Cap) : 0;
+  const tier2SlotCount = useDualRing ? tier2ChildrenCount + (directOverflow ? 1 : 0) : 0;
+  const tier1SlotCount = useDualRing ? tier1Cap : directSlotCount;
+
+  const minCardArc2D = 212;
+  const innerRadius2D = Math.max(255, (Math.max(1, tier1SlotCount) * minCardArc2D) / (2 * Math.PI));
+  const outerRadius2D = useDualRing
+    ? Math.max(innerRadius2D + 210, (Math.max(1, tier2SlotCount) * minCardArc2D) / (2 * Math.PI))
+    : innerRadius2D;
+
+  const innerRadius3D = Math.max(3.4, 2.2 + Math.sqrt(Math.max(1, tier1SlotCount)) * 0.72);
+  const outerRadius3D = useDualRing
+    ? Math.max(innerRadius3D + 2.6, 2.8 + Math.sqrt(Math.max(1, tier2SlotCount)) * 0.92)
+    : innerRadius3D;
+
+  const clearOuterRadius2D = outerRadius2D;
+  const clearOuterRadius3D = outerRadius3D;
 
   visibleDirectChildrenList.forEach((child, i) => {
-    const angle = (i / Math.max(1, directCount)) * Math.PI * 2 - Math.PI / 2;
-    const x2D = Math.cos(angle) * base2DRadius;
-    const y2D = Math.sin(angle) * base2DRadius;
+    const isTier2 = useDualRing && i >= tier1Cap;
+    const ringIndex = isTier2 ? i - tier1Cap : i;
+    const ringTotal = Math.max(1, isTier2 ? tier2SlotCount : tier1SlotCount);
+    const phaseOffset = isTier2 ? Math.PI / ringTotal : 0;
+
+    const angle = (ringIndex / ringTotal) * Math.PI * 2 - Math.PI / 2 + phaseOffset;
+    const r2D = isTier2 ? outerRadius2D : innerRadius2D;
+    const x2D = Math.cos(angle) * r2D;
+    const y2D = Math.sin(angle) * r2D;
     positions2D.set(child.id, { x: x2D, y: y2D, angle });
 
-    const angle3D = i * GOLDEN_ANGLE;
-    const lift3D = -(0.55 + i * 0.08);
-    const x3D = Math.cos(angle3D) * base3DRadius;
-    const z3D = Math.sin(angle3D) * base3DRadius;
+    const r3D = isTier2 ? outerRadius3D : innerRadius3D;
+    const angle3D = (ringIndex / ringTotal) * Math.PI * 2 + phaseOffset;
+    const lift3D = isTier2 ? -(1.05 + (ringIndex % 3) * 0.16) : -(0.45 + (ringIndex % 3) * 0.14);
+    const x3D = Math.cos(angle3D) * r3D;
+    const z3D = Math.sin(angle3D) * r3D;
     positions3D.set(child.id, [x3D, lift3D, z3D]);
 
-    // If expanded, fan out branch children in its sector without overlapping sibling folders
+    // If directory branch is expanded, fan its <=15 items radially OUTWARD outside clearOuterRadius2D
+    // across balanced concentric micro-arcs so NO sibling or file card can collide!
     if (child.kind === 'directory' && expandedNodeIds.has(child.id)) {
       const branchItems = visibleBranchChildren.filter((b) => b.parentId === child.id);
-      const branchOverflow = overflowNodes.find((o) => o.parentId === child.id);
+      const branchOverflow = overflowNodes.find((o) => o.isBranchOverflow && o.parentId === child.id);
       const totalBranchSlots = branchItems.length + (branchOverflow ? 1 : 0);
 
       if (totalBranchSlots > 0) {
-        const innerCap = Math.min(totalBranchSlots, 6);
-        const outerCount = Math.max(0, totalBranchSlots - innerCap);
-        const siblingSector = directCount > 1 ? ((Math.PI * 2) / directCount) * 1.15 : Math.PI * 0.85;
-        const maxSectorAngle = Math.max(0.45, Math.min(Math.PI * 0.68, siblingSector));
+        // Partition items cleanly into outward radial arcs (5 on inner arc, 6 on middle arc, rest + overflow on outer)
+        const arc1Cap = Math.min(branchItems.length, 5);
+        const arc2Cap = Math.min(Math.max(0, branchItems.length - arc1Cap), 6);
+        const arc3ItemsCount = Math.max(0, branchItems.length - arc1Cap - arc2Cap);
+
+        const branchBaseR2D = clearOuterRadius2D + 205;
+        const arcRadii2D = [branchBaseR2D, branchBaseR2D + 145, branchBaseR2D + 290];
+        const arcRadii3D = [clearOuterRadius3D + 2.5, clearOuterRadius3D + 4.1, clearOuterRadius3D + 5.7];
 
         branchItems.forEach((bChild, bIdx) => {
-          const isOuterBand = bIdx >= innerCap;
-          const bandIndex = isOuterBand ? 1 : 0;
-          const bandSlots = isOuterBand ? outerCount : innerCap;
-          const indexInBand = isOuterBand ? bIdx - innerCap : bIdx;
-          const bandRadius2D = isOuterBand ? 285 : 190;
+          let arcIdx = 0;
+          let idxInArc = bIdx;
+          let countInArc = arc1Cap;
 
-          let offsetAngle = 0;
-          if (bandSlots > 1) {
-            const spread = Math.min(maxSectorAngle, (bandSlots * 82) / bandRadius2D);
-            offsetAngle = -spread / 2 + (indexInBand / (bandSlots - 1)) * spread;
+          if (bIdx >= arc1Cap + arc2Cap) {
+            arcIdx = 2;
+            idxInArc = bIdx - arc1Cap - arc2Cap;
+            countInArc = arc3ItemsCount + (branchOverflow ? 1 : 0);
+          } else if (bIdx >= arc1Cap) {
+            arcIdx = 1;
+            idxInArc = bIdx - arc1Cap;
+            countInArc = arc2Cap;
+          } else if (arc1Cap + arc2Cap === branchItems.length && branchItems.length <= 5 && branchOverflow) {
+            countInArc = arc1Cap;
           }
-          const bAngle = angle + offsetAngle;
-          const bx2D = x2D + Math.cos(bAngle) * bandRadius2D;
-          const by2D = y2D + Math.sin(bAngle) * bandRadius2D;
-          positions2D.set(bChild.id, { x: bx2D, y: by2D, angle: bAngle, band: bandIndex });
 
-          const bAngle3D = angle3D + bIdx * 0.55;
-          const bLift3D = lift3D - 0.45 - bIdx * 0.06;
-          const bx3D = x3D + Math.cos(bAngle3D) * 2.25;
-          const bz3D = z3D + Math.sin(bAngle3D) * 2.25;
+          const rArc2D = arcRadii2D[arcIdx];
+          const desiredChord = 204;
+          const maxAngleSpan = arcIdx === 0 ? 0.92 : arcIdx === 1 ? 1.12 : 1.24;
+          const spread = countInArc > 1 ? Math.min(maxAngleSpan, ((countInArc - 1) * desiredChord) / rArc2D) : 0;
+          const offsetAngle = countInArc > 1 ? -spread / 2 + (idxInArc / (countInArc - 1)) * spread : 0;
+
+          const bAngle = angle + offsetAngle;
+          const bx2D = Math.cos(bAngle) * rArc2D;
+          const by2D = Math.sin(bAngle) * rArc2D;
+          positions2D.set(bChild.id, { x: bx2D, y: by2D, angle: bAngle, band: arcIdx });
+
+          const rArc3D = arcRadii3D[arcIdx];
+          const bAngle3D = angle3D + offsetAngle;
+          const bLift3D = lift3D - 0.35 - arcIdx * 0.42;
+          const bx3D = Math.cos(bAngle3D) * rArc3D;
+          const bz3D = Math.sin(bAngle3D) * rArc3D;
           positions3D.set(bChild.id, [bx3D, bLift3D, bz3D]);
         });
 
         if (branchOverflow) {
-          const overflowRadius2D = outerCount > 0 ? 335 : 235;
-          const overflowAngle = angle + maxSectorAngle * 0.35;
-          const ox2D = x2D + Math.cos(overflowAngle) * overflowRadius2D;
-          const oy2D = y2D + Math.sin(overflowAngle) * overflowRadius2D;
+          const hasArc3 = arc3ItemsCount > 0;
+          const hasArc2 = arc2Cap > 0;
+          const ovArcIdx = hasArc3 ? 2 : hasArc2 ? 2 : 1;
+          const rOv2D = hasArc3 ? arcRadii2D[2] : hasArc2 ? arcRadii2D[1] + 135 : arcRadii2D[0] + 135;
+
+          const slotsInOvArc = hasArc3 ? arc3ItemsCount + 1 : 1;
+          const spread = slotsInOvArc > 1 ? Math.min(1.24, ((slotsInOvArc - 1) * 204) / rOv2D) : 0;
+          const ovOffsetAngle = slotsInOvArc > 1 ? spread / 2 : 0;
+          const ovAngle = angle + ovOffsetAngle;
+
           branchOverflow.position2D = {
-            x: ox2D,
-            y: oy2D,
-            angle: overflowAngle,
+            x: Math.cos(ovAngle) * rOv2D,
+            y: Math.sin(ovAngle) * rOv2D,
+            angle: ovAngle,
             isOverflowIndicator: true,
             overflowCount: branchOverflow.hiddenCount,
           };
           positions2D.set(branchOverflow.id, branchOverflow.position2D);
 
-          const ox3D = x3D + Math.cos(angle3D + branchItems.length * 0.55) * 2.8;
-          const oz3D = z3D + Math.sin(angle3D + branchItems.length * 0.55) * 2.8;
-          branchOverflow.position3D = [ox3D, lift3D - 0.5 - branchItems.length * 0.06, oz3D];
+          const rOv3D = arcRadii3D[Math.min(2, ovArcIdx)];
+          const ovAngle3D = angle3D + ovOffsetAngle;
+          branchOverflow.position3D = [
+            Math.cos(ovAngle3D) * rOv3D,
+            lift3D - 0.4 - ovArcIdx * 0.42,
+            Math.sin(ovAngle3D) * rOv3D,
+          ];
           positions3D.set(branchOverflow.id, branchOverflow.position3D);
         }
       }
     }
   });
 
-  // Direct overflow node placement
-  const directOverflow = overflowNodes.find((o) => o.parentId === focusNode.id);
+  // Direct overflow / pagination node placement on the outer slot of the focus ring
   if (directOverflow) {
-    const overflowAngle = ((directCount - 1) / Math.max(1, directCount)) * Math.PI * 2 - Math.PI / 2;
-    const ox2D = Math.cos(overflowAngle) * (base2DRadius + 20);
-    const oy2D = Math.sin(overflowAngle) * (base2DRadius + 20);
+    const ovSlotTotal = Math.max(1, useDualRing ? tier2SlotCount : tier1SlotCount);
+    const ovIdx = ovSlotTotal - 1;
+    const phaseOffset = useDualRing ? Math.PI / ovSlotTotal : 0;
+    const overflowAngle = (ovIdx / ovSlotTotal) * Math.PI * 2 - Math.PI / 2 + phaseOffset;
+    const rOv2D = useDualRing ? outerRadius2D : innerRadius2D;
+
     directOverflow.position2D = {
-      x: ox2D,
-      y: oy2D,
+      x: Math.cos(overflowAngle) * rOv2D,
+      y: Math.sin(overflowAngle) * rOv2D,
       angle: overflowAngle,
       isOverflowIndicator: true,
       overflowCount: directOverflow.hiddenCount,
     };
     positions2D.set(directOverflow.id, directOverflow.position2D);
 
-    const angle3D = (directCount - 1) * GOLDEN_ANGLE;
-    const lift3D = -(0.55 + (directCount - 1) * 0.08);
-    const ox3D = Math.cos(angle3D) * (base3DRadius + 0.6);
-    const oz3D = Math.sin(angle3D) * (base3DRadius + 0.6);
-    directOverflow.position3D = [ox3D, lift3D, oz3D];
+    const angle3D = (ovIdx / ovSlotTotal) * Math.PI * 2 + phaseOffset;
+    const lift3D = useDualRing ? -1.15 : -0.6;
+    const rOv3D = useDualRing ? outerRadius3D : innerRadius3D;
+    directOverflow.position3D = [Math.cos(angle3D) * rOv3D, lift3D, Math.sin(angle3D) * rOv3D];
     positions3D.set(directOverflow.id, directOverflow.position3D);
   }
 
-  // Selected Path Placement Guarantee:
-  // Any visible node along the selected path that was not positioned by direct children or expanded branches
-  // is placed deterministically extending outward along the ancestor ray.
+  // Selected Path Placement Guarantee
   for (let idx = 0; idx < selectedPathNodes.length; idx += 1) {
     const pNode = selectedPathNodes[idx];
     if (!positions2D.has(pNode.id)) {
@@ -745,7 +826,7 @@ export function computeGraphViewport({
       const parentPos3D = positions3D.get(parentId) ?? [0, 0, 0];
 
       const pAngle = Math.atan2(parentPos2D.y, parentPos2D.x) || (Math.PI / 4 + idx * 0.2);
-      const step2D = 140;
+      const step2D = 165;
       const x2D = parentPos2D.x + Math.cos(pAngle) * step2D;
       const y2D = parentPos2D.y + Math.sin(pAngle) * step2D;
       positions2D.set(pNode.id, { x: x2D, y: y2D, angle: pAngle });
@@ -753,9 +834,9 @@ export function computeGraphViewport({
       const dist3D = Math.hypot(parentPos3D[0], parentPos3D[2]) || 2.0;
       const normX = parentPos3D[0] / dist3D || Math.cos(pAngle);
       const normZ = parentPos3D[2] / dist3D || Math.sin(pAngle);
-      const x3D = parentPos3D[0] + normX * 1.8;
+      const x3D = parentPos3D[0] + normX * 1.9;
       const y3D = parentPos3D[1] - 0.45;
-      const z3D = parentPos3D[2] + normZ * 1.8;
+      const z3D = parentPos3D[2] + normZ * 1.9;
       positions3D.set(pNode.id, [x3D, y3D, z3D]);
     }
   }
@@ -909,6 +990,14 @@ export function computeGraphViewport({
     totalDirectChildren,
     visibleDirectChildren: visibleDirectChildrenList.length,
     hiddenDirectChildren,
+    directPageOffset: safeOffset,
+    directPageSize: pageSize,
+    currentDirectPage,
+    totalDirectPages,
+    hasPrevDirectPage,
+    hasNextDirectPage,
+    directPageStart,
+    directPageEnd,
     totalDependenciesInScope,
     visibleDependenciesCount: visibleDependencyEdges.length,
     dependencyDensityCapped,

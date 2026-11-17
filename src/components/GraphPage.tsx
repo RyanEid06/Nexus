@@ -2,6 +2,8 @@ import { useRef, useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft,
   Boxes,
+  ChevronLeft,
+  ChevronRight,
   Compass,
   Crosshair,
   Maximize2,
@@ -36,6 +38,9 @@ export function GraphPage() {
   const setRelationshipMode = useAppStore((s) => s.setRelationshipMode);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
+  const mapPageOffset = useAppStore((s) => s.mapPageOffset);
+  const nextMapPage = useAppStore((s) => s.nextMapPage);
+  const prevMapPage = useAppStore((s) => s.prevMapPage);
   const setMapFocusNodeId = useAppStore((s) => s.setMapFocusNodeId);
   const navigateUpToParentFocus = useAppStore((s) => s.navigateUpToParentFocus);
   const isInspectorCollapsed = useAppStore((s) => s.isInspectorCollapsed);
@@ -134,8 +139,10 @@ export function GraphPage() {
       selectedNodeId,
       expandedNodeIds,
       relationshipMode,
+      directPageOffset: mapPageOffset,
+      expandedBranchLimit: 15,
     });
-  }, [project, graphIndex, constellationMode, mapFocusNodeId, selectedNodeId, expandedNodeIds, relationshipMode]);
+  }, [project, graphIndex, constellationMode, mapFocusNodeId, mapPageOffset, selectedNodeId, expandedNodeIds, relationshipMode]);
 
   const constellation = useMemo(() => {
     if (!constellationMode) return null;
@@ -205,10 +212,36 @@ export function GraphPage() {
                   {viewport && (
                     <div className="map-status-info">
                       <span className="tabular-nums">
-                        {viewport.visibleNodes.length} nodes · {viewport.totalDirectChildren} children
-                        {viewport.hiddenDirectChildren > 0 && ` · +${viewport.hiddenDirectChildren} hidden`}
+                        {viewport.visibleNodes.length} nodes · {viewport.totalDirectChildren.toLocaleString()} children
+                        {viewport.hiddenDirectChildren > 0 && ` · +${viewport.hiddenDirectChildren.toLocaleString()} hidden`}
                         {viewport.visibleDependenciesCount > 0 && ` · ${viewport.visibleDependenciesCount} deps`}
                       </span>
+                    </div>
+                  )}
+
+                  {viewport && viewport.totalDirectPages > 1 && (
+                    <div className="map-pagination-bar" role="group" aria-label="Folder children pages">
+                      <button
+                        className="map-page-btn"
+                        disabled={!viewport.hasPrevDirectPage}
+                        onClick={() => prevMapPage()}
+                        title="Previous 24 items"
+                        aria-label="Previous 24 items"
+                      >
+                        <ChevronLeft size={13} />
+                      </button>
+                      <span className="map-page-readout tabular-nums">
+                        {viewport.directPageStart.toLocaleString()}–{viewport.directPageEnd.toLocaleString()} / {viewport.totalDirectChildren.toLocaleString()}
+                      </span>
+                      <button
+                        className="map-page-btn"
+                        disabled={!viewport.hasNextDirectPage}
+                        onClick={() => nextMapPage()}
+                        title="Next 24 items"
+                        aria-label="Next 24 items"
+                      >
+                        <ChevronRight size={13} />
+                      </button>
                     </div>
                   )}
                 </div>
@@ -277,8 +310,8 @@ export function GraphPage() {
             {constellation
               ? 'Click to inspect · Double-click project to focus'
               : mapMode === '2d'
-              ? 'Drag to pan · Scroll to zoom · Double-click to open'
-              : 'Drag orbit · Right-drag pan · Scroll zoom · Double-click open'}
+              ? 'Click folder to preview 15 · Double-click for sub-map · Drag to pan'
+              : 'Click folder to preview 15 · Double-click for sub-map · Drag orbit'}
           </div>
 
           {/* Bottom-right Precision Control Dock */}

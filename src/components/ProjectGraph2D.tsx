@@ -54,7 +54,10 @@ export function ProjectGraph2D({
   const setPage = useAppStore((s) => s.setPage);
   const expandedNodeIds = useAppStore((s) => s.expandedNodeIds);
   const toggleExpandNode = useAppStore((s) => s.toggleExpandNode);
+  const previewFolderBranch = useAppStore((s) => s.previewFolderBranch);
   const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
+  const mapPageOffset = useAppStore((s) => s.mapPageOffset);
+  const nextMapPage = useAppStore((s) => s.nextMapPage);
   const drillDownNode = useAppStore((s) => s.drillDownNode);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,8 +108,10 @@ export function ProjectGraph2D({
       selectedNodeId: selectedId,
       expandedNodeIds,
       relationshipMode,
+      directPageOffset: mapPageOffset,
+      expandedBranchLimit: 15,
     });
-  }, [project, graphIndex, constellationMode, mapFocusNodeId, selectedId, expandedNodeIds, relationshipMode]);
+  }, [project, graphIndex, constellationMode, mapFocusNodeId, mapPageOffset, selectedId, expandedNodeIds, relationshipMode]);
 
   const layout = useMemo(() => viewport?.positions2D ?? new Map<string, Node2DPosition>(), [viewport]);
   const visibleNodes = useMemo(() => viewport?.visibleNodes ?? [], [viewport]);
@@ -201,12 +206,12 @@ export function ProjectGraph2D({
     [constellation, layout]
   );
 
-  // Auto-fit when switching project, focus node, expanded folders, or constellation mode
+  // Auto-fit when switching project, focus node, page offset, or constellation mode
+  // Do NOT refit on single-click branch expand so double-clicks never lose hit target mid-gesture
   const lastFitSignatureRef = useRef<string>('');
-  const expandedSig = Array.from(expandedNodeIds).sort().join(',');
   const fitSignature = constellation
     ? `constellation:${constellation.projects.map((p) => p.projectId).join(',')}`
-    : `single:${project?.id ?? ''}:${viewport?.focusNode.id ?? ''}:${expandedSig}`;
+    : `single:${project?.id ?? ''}:${viewport?.focusNode.id ?? ''}:${mapPageOffset}`;
 
   useEffect(() => {
     if (!active) return;
@@ -377,8 +382,18 @@ export function ProjectGraph2D({
   }, [viewport, project, visibleDependencyEdges, hoveredNodeId, selectedId]);
 
   const activeHighlightedIds = useMemo(() => {
+    if (!viewport || !project) return null;
+    const isHovering = hoveredNodeId !== null;
+    const selectedNode = selectedId ? viewport.visibleNodesMap.get(selectedId) : null;
+    const shouldSpotlightSelection =
+      relationshipMode !== 'hierarchy' || selectedNode?.kind === 'file';
+
+    if (!isHovering && !shouldSpotlightSelection) {
+      return null;
+    }
+
     const targetId = hoveredNodeId ?? selectedId;
-    if (!targetId || !viewport || !project) return null;
+    if (!targetId) return null;
 
     const set = new Set<string>();
     set.add(targetId);
@@ -397,7 +412,7 @@ export function ProjectGraph2D({
     for (const item of incoming) set.add(item.sourceId);
 
     return set;
-  }, [hoveredNodeId, selectedId, viewport, project, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
+  }, [hoveredNodeId, selectedId, viewport, project, relationshipMode, visibleOutgoingByNodeId, visibleIncomingByNodeId]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -859,14 +874,17 @@ export function ProjectGraph2D({
             return (
               <div
                 key={node.id}
-                className={`node-2d-anchor node-2d-dir ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''} ${isDimmed ? 'dimmed' : ''}`}
+                className={`node-2d-anchor node-2d-dir ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''} ${isExpanded ? 'branch-expanded' : ''} ${isDimmed ? 'dimmed' : ''}`}
                 style={{
                   transform: `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)`,
-                  borderColor: isSelected ? '#22D3EE' : `${color}88`,
+                  borderColor: isSelected || isExpanded ? '#22D3EE' : `${color}88`,
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
                   selectNode(node.id);
+                  if (!isExpanded && descendantCount > 0) {
+                    previewFolderBranch(node.id);
+                  }
                 }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
@@ -874,7 +892,7 @@ export function ProjectGraph2D({
                 }}
                 onMouseEnter={() => setHoveredNodeId(node.id)}
                 onMouseLeave={() => setHoveredNodeId(null)}
-                title={`${node.name}/ (${descendantCount} files) · Double-click to focus folder`}
+                title={`${node.name}/ (${descendantCount.toLocaleString()} files) · Click to preview · Double-click to open sub-map`}
               >
                 <div className="dir-icon-col" style={{ color }}>
                   {isExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}
@@ -883,7 +901,7 @@ export function ProjectGraph2D({
                   <span className="dir-name">{node.name}/</span>
                   {!isLowLOD && (
                     <span className="dir-count">
-                      {descendantCount} {descendantCount === 1 ? 'file' : 'files'}
+                      {descendantCount.toLocaleString()} {descendantCount === 1 ? 'file' : 'files'}
                     </span>
                   )}
                 </div>
@@ -893,7 +911,7 @@ export function ProjectGraph2D({
                     e.stopPropagation();
                     toggleExpandNode(node.id);
                   }}
-                  title={isExpanded ? 'Collapse branch' : 'Expand branch'}
+                  title={isExpanded ? 'Collapse preview' : 'Preview up to 15 items'}
                   aria-label={isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
                 >
                   <ChevronRight size={13} />
@@ -932,24 +950,46 @@ export function ProjectGraph2D({
           );
         })}
 
-        {/* 4. Overflow Indicators */}
+        {/* 4. Interactive Sub-Map & Pagination Overflow Indicators */}
         {overflowNodes.map((overflow: ViewportOverflowNode) => {
           const pos = layout.get(overflow.id);
           if (!pos) return null;
 
+          if (overflow.isBranchOverflow) {
+            return (
+              <button
+                key={overflow.id}
+                className="node-2d-anchor node-2d-overflow-btn branch-submap"
+                style={{ transform: `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)` }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  drillDownNode(overflow.parentId);
+                }}
+                title={`Open dedicated sub-map for ${overflow.parentName ?? 'folder'}/ (${overflow.totalChildrenCount.toLocaleString()} items)`}
+              >
+                <span>{overflow.label}</span>
+              </button>
+            );
+          }
+
           return (
             <button
               key={overflow.id}
-              className="node-2d-anchor node-2d-overflow-btn"
+              className="node-2d-anchor node-2d-overflow-btn focus-page-next"
               style={{ transform: `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)` }}
               onClick={(e) => {
+                e.stopPropagation();
+                nextMapPage();
+              }}
+              onDoubleClick={(e) => {
                 e.stopPropagation();
                 selectNode(overflow.parentId);
                 setPage('structure');
               }}
-              title={`View all ${overflow.hiddenCount.toLocaleString()} additional items in Structure`}
+              title={`Click to show next 24 of ${overflow.totalChildrenCount.toLocaleString()} items · Double-click to open full Structure table`}
             >
               <span>{overflow.label}</span>
+              <small>Click for next 24 →</small>
             </button>
           );
         })}

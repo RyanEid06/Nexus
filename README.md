@@ -1,69 +1,61 @@
-# NEXUS — Local-First Codebase Visualizer (v1.0.0)
+# NEXUS — Architectural Codebase Visualizer
 
-NEXUS is a **desktop-first, local-first 3D codebase visualizer and architectural explorer**. It opens local software repositories directly from the user's machine using the Chromium File System Access API, performs zero-cloud client-side indexing, and transforms project hierarchies into an interactive spatial map, virtualized directory explorer, and lexical dependency graph.
+NEXUS is a **desktop-first, local-first codebase visualizer and architectural workspace**. It opens local repositories directly from disk using the Chromium File System Access API, indexes files and AST/lexical dependencies inside the browser with zero backend uploads, and renders both interactive 2D blueprint topologies and a high-precision Three.js 3D workstation—including multi-project orbital constellations.
 
 ---
 
 ## Key Features
 
-- **Direct Local File Access**: Opens folders directly from your local file system. Source code never leaves the browser—no uploads, no cloud proxies, and no repository cloning.
-- **Interactive 3D Graph**: Spatial representation of directories, subdirectories, and files built with Three.js / React Three Fiber, featuring physics-informed layouts, camera auto-framing, and WebGL error recovery.
-- **Real Parsed Dependencies**: Token-aware lexical extraction of JavaScript and TypeScript imports (`import`, `export from`, `require()`, dynamic `import()`), path resolution (`baseUrl`, `tsconfig.json` JSONC path mappings, index files), external package grouping, Tarjan's Strongly Connected Components (SCC) circular dependency group detection, and BFS shortest-path routing.
-- **Virtualized Structure Explorer**: High-density hierarchical view rendering thousands of nodes with windowing and zero DOM bloat, expand/collapse toggles, and keyboard navigation.
-- **Deterministic Analytics & Insights**: Physical lines of code (LOC), language breakdown, file size distribution, and analysis safety metrics (metadata-only vs text-analyzed).
-- **Persistent Local Caching & Reconnect**: Compact indexes stored in IndexedDB with persisted per-project analysis configuration. Stored folder handles preserve project identities, support incremental refresh (caching raw specifiers without rereading unchanged source), off-thread Web Worker parsing, and safe folder relocation with structural validation.
-- **Installable Offline PWA**: Compliant Progressive Web App with service worker offline caching, manifest icons, and instant loading.
+- **Direct Local File Access & Privacy**: Opens folders directly from your local machine. Raw source files stay strictly on disk and are never persisted or uploaded anywhere.
+- **2D Spatial Blueprint & Pure Three.js 3D Engine**: Seamless switching between a hardware-crisp 2D coordinate topology and a physical metallic Three.js / WebGL 3D studio scene (`OrbitControls`, `RoomEnvironment` IBL lighting, directional dependency arcs, and automatic WebGL recovery).
+- **Large-Folder Balance & Recursive Sub-Maps**: Handles 7,000+ file repositories and 900+ file directories without visual cramping:
+  - **Single-Click Folder Preview**: Clicking a folder fans out up to **15 prioritized items** radially outside outer rings so sibling hubs never overlap.
+  - **Double-Click Recursive Sub-Maps**: Double-clicking any folder (or clicking its `+ N more · Sub-Map` marker) opens a centered sub-map for that directory, recursively sub-map into sub-map, with HUD breadcrumbs, `Up` / `Esc`, and full Back/Forward navigation history.
+  - **Page-by-Page Map Navigation**: Massive folders with 25–1,000+ direct children can be paged in clean 24-node concentric batches (`‹ Prev` / `Next ›` in the HUD or directly on canvas overflow triggers).
+- **Multi-Project Constellation Workspace**: Load up to 6 repositories simultaneously (including curated TypeScript architectural sandboxes), switch instant active workspaces, and inspect shared external dependency bridges side-by-side in 2D and 3D Constellation mode.
+- **Real Parsed Dependencies**: Lexical extraction of ES/CommonJS/dynamic imports, `tsconfig.json` JSONC path alias & `baseUrl` resolution, Tarjan's SCC circular dependency cycle detection, and BFS shortest-path analysis.
+- **Virtualized Structure Explorer & Analytics**: Windowed hierarchical explorer for tens of thousands of nodes, instant ranked LOC/language analytics, and keyboard-driven search (`Ctrl+K`).
+- **Offline-Ready PWA & Self-Hosted Fonts**: Full Progressive Web App compliance (synchronized SVG/PNG/maskable/Apple Touch icons, Workbox offline precaching, `OfflineIndicator`, and native `Install App` / iOS Safari install prompt) with bundled self-hosted `@fontsource` typefaces (`Outfit`, `Plus Jakarta Sans`, `JetBrains Mono`) built to satisfy strict `font-src 'self'` Content Security Policies.
 
 ---
 
 ## Privacy & Security Guarantee
 
-1. **Client-Only Architecture**: Zero server backends, zero external API keys, zero AI integrations, and zero telemetry.
-2. **Metadata-Only Safeguards**: Known sensitive files (`.env*`, `*.pem`, `*.key`, `id_rsa`, credentials) are strictly indexed for file metadata only; their file contents are never read into memory.
-3. **Safety Limits**: Automatic read-size limits for large text files and entry limits to safeguard browser memory.
-4. **No Raw Source Persistence**: Raw source file text is never stored in IndexedDB—only compact metadata, hierarchy trees, and resolved dependency edges are cached.
-
----
-
-## Browser Requirements
-
-- **Direct Folder Access**: Requires a desktop Chromium-based browser supporting the File System Access API:
-  - Google Chrome (Desktop)
-  - Microsoft Edge (Desktop)
-  - Brave Browser (Desktop)
-  - Opera / Arc (Desktop)
-- **Fallback Support**: Other modern browsers (Firefox, Safari) can view the preloaded **Curated Demo** and inspect previously saved offline indexes.
+1. **Client-Only Execution**: Zero backend servers, zero external API keys, and zero external font/CDN requests at runtime.
+2. **Metadata-Only Safeguards**: Sensitive files (`.env*`, `*.pem`, `*.key`, credentials) are indexed strictly for metadata; contents are never read into memory.
+3. **Strict CSP Compatibility**: Pre-configured in `public/_headers` (`font-src 'self'`, `style-src 'self' 'unsafe-inline'`, `connect-src 'self'`).
+4. **Compact IndexedDB Persistence**: Folder handles and lightweight hierarchy/dependency indexes are stored locally in IndexedDB with safe relocation checks.
 
 ---
 
 ## Development & Verification
 
 ### Prerequisites
-- Node.js >=22 (Node 22.14.0 as specified in `.node-version` and `package.json`)
+- Node.js >=22 (`22.14.0` pinned in `.node-version` and `package.json`)
 - npm 10+
 
-### Setup & Testing
+### Commands
 ```bash
 # Install dependencies
 npm install
 
-# Run unit test suite
+# Run test suite (Vitest)
 npm test
 
 # Typecheck and production build
 npm run build
+
+# Lint codebase (oxlint)
+npm run lint
 ```
 
 ---
 
 ## Cloudflare Pages Deployment
 
-NEXUS V1 is architected as a pure static client-side application ready for instant deployment to Cloudflare Pages:
-
 - **Framework preset**: `None` / `Vite`
 - **Build command**: `npm run build`
 - **Build output directory**: `dist`
 - **Root directory**: `/`
-- **Environment variables**: None required (zero secrets)
-- **Node.js version**: `22.14.0` (set in `.node-version`)
-- **Headers & Security**: Pre-configured in `public/_headers` with Content Security Policy, strict MIME-type protection, and immutable asset caching.
+- **Node.js version**: `22.14.0`
+- **Headers & Security**: Configured in `public/_headers` with strict self-hosted CSP, `X-Frame-Options`, `X-Content-Type-Options`, and immutable `/assets/*` caching.

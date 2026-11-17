@@ -11,6 +11,7 @@ export function Inspector() {
   const setConstellationMode = useAppStore((s) => s.setConstellationMode);
   const switchProject = useAppStore((s) => s.switchProject);
   const selectedId = useAppStore((s) => s.selectedNodeId);
+  const mapFocusNodeId = useAppStore((s) => s.mapFocusNodeId);
   const isCollapsed = useAppStore((s) => s.isInspectorCollapsed);
   const toggleInspector = useAppStore((s) => s.toggleInspector);
   const setPage = useAppStore((s) => s.setPage);
@@ -147,7 +148,10 @@ export function Inspector() {
     );
   }
 
-  const node = project.nodes.find((item) => item.id === selectedId) ?? project.nodes[0];
+  const node =
+    project.nodes.find((item) => item.id === selectedId) ??
+    project.nodes.find((item) => item.kind === 'project') ??
+    project.nodes[0];
   if (!node) {
     return <aside className="inspector" />;
   }
@@ -242,6 +246,18 @@ export function Inspector() {
           </>
         )}
       </dl>
+
+      {node.kind === 'directory' && node.id !== mapFocusNodeId && (
+        <div className="inspector-actions">
+          <button
+            className="action-btn highlight"
+            style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
+            onClick={() => useAppStore.getState().drillDownNode(node.id)}
+          >
+            <FolderOpen size={14} /> Open Sub-Map →
+          </button>
+        </div>
+      )}
 
       {node.kind === 'file' && (
         <div className="inspector-actions">

@@ -844,4 +844,150 @@ describe('Graph Viewport & Spatial Budgeting', () => {
     // Viewport construction over 30,000 edges without unbounded allocation completes in < 35ms
     expect(duration).toBeLessThan(35);
   });
+
+  it('13. 900-file folder pagination: directPageOffset pages cleanly through 24-node slices', () => {
+    const files: ProjectNode[] = Array.from({ length: 900 }, (_, i) =>
+      createMockNode({
+        id: `file_${i}`,
+        parentId: 'root',
+        name: `file_${String(i).padStart(3, '0')}.ts`,
+        kind: 'file',
+        path: `file_${i}.ts`,
+        loc: 1000 - i,
+        depth: 1,
+      })
+    );
+
+    const project = createMockProject(files);
+    const page1 = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: null,
+      expandedNodeIds: new Set(),
+      directPageOffset: 0,
+    });
+
+    expect(page1.totalDirectChildren).toBe(900);
+    expect(page1.totalDirectPages).toBe(Math.ceil(900 / MAX_DIRECT_REAL_CHILDREN));
+    expect(page1.currentDirectPage).toBe(1);
+    expect(page1.hasPrevDirectPage).toBe(false);
+    expect(page1.hasNextDirectPage).toBe(true);
+    expect(page1.directPageStart).toBe(1);
+    expect(page1.directPageEnd).toBe(24);
+
+    const page2 = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: null,
+      expandedNodeIds: new Set(),
+      directPageOffset: 24,
+    });
+
+    expect(page2.currentDirectPage).toBe(2);
+    expect(page2.hasPrevDirectPage).toBe(true);
+    expect(page2.hasNextDirectPage).toBe(true);
+    expect(page2.directPageStart).toBe(25);
+    expect(page2.directPageEnd).toBe(48);
+
+    const page1ChildIds = new Set(page1.visibleNodes.filter((n) => n.id !== 'root').map((n) => n.id));
+    const page2ChildIds = new Set(page2.visibleNodes.filter((n) => n.id !== 'root').map((n) => n.id));
+    for (const id of page2ChildIds) {
+      expect(page1ChildIds.has(id)).toBe(false);
+    }
+  });
+
+  it('14. Expanded branch with expandedBranchLimit=15 shows 15 items and marks isBranchOverflow for Sub-Map drill', () => {
+    const children: ProjectNode[] = Array.from({ length: 900 }, (_, i) =>
+      createMockNode({
+        id: `heavy_${i}`,
+        parentId: 'd_heavy',
+        name: `mod_${i}.ts`,
+        kind: 'file',
+        path: `heavy/mod_${i}.ts`,
+        loc: 50,
+        depth: 2,
+      })
+    );
+
+    const nodes: ProjectNode[] = [
+      createMockNode({
+        id: 'd_heavy',
+        parentId: 'root',
+        name: 'heavy',
+        kind: 'directory',
+        path: 'heavy',
+        loc: 0,
+        depth: 1,
+        descendantFiles: 900,
+      }),
+      ...children,
+    ];
+
+    const project = createMockProject(nodes);
+    const viewport = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: null,
+      expandedNodeIds: new Set(['d_heavy']),
+      expandedBranchLimit: 15,
+    });
+
+    const visibleBranchItems = viewport.visibleNodes.filter((n) => n.parentId === 'd_heavy');
+    expect(visibleBranchItems.length).toBe(15);
+
+    const branchOverflow = viewport.overflowNodes.find((o) => o.parentId === 'd_heavy');
+    expect(branchOverflow).toBeDefined();
+    expect(branchOverflow!.isBranchOverflow).toBe(true);
+    expect(branchOverflow!.hiddenCount).toBe(885);
+    expect(branchOverflow!.label).toContain('Sub-Map');
+  });
+
+  it('15. Spatial non-overlap invariant: dual-ring & outward 15-item branch keep comfortable 2D separation', () => {
+    const dirs: ProjectNode[] = Array.from({ length: 24 }, (_, i) =>
+      createMockNode({
+        id: `dir_${i}`,
+        parentId: 'root',
+        name: `subsystem_${i}`,
+        kind: 'directory',
+        path: `subsystem_${i}`,
+        loc: 0,
+        depth: 1,
+        descendantFiles: 100 - i,
+      })
+    );
+    const branchFiles: ProjectNode[] = Array.from({ length: 40 }, (_, i) =>
+      createMockNode({
+        id: `bf_${i}`,
+        parentId: 'dir_0',
+        name: `item_${i}.ts`,
+        kind: 'file',
+        path: `subsystem_0/item_${i}.ts`,
+        loc: 100 - i,
+        depth: 2,
+      })
+    );
+
+    const project = createMockProject([...dirs, ...branchFiles]);
+    const viewport = computeGraphViewport({
+      project,
+      mapFocusNodeId: 'root',
+      selectedNodeId: 'dir_0',
+      expandedNodeIds: new Set(['dir_0']),
+      expandedBranchLimit: 15,
+    });
+
+    const placedPoints = Array.from(viewport.positions2D.entries());
+    let minPairwiseDist = Infinity;
+    for (let i = 0; i < placedPoints.length; i += 1) {
+      for (let j = i + 1; j < placedPoints.length; j += 1) {
+        const [, pA] = placedPoints[i];
+        const [, pB] = placedPoints[j];
+        const d = Math.hypot(pA.x - pB.x, pA.y - pB.y);
+        if (d < minPairwiseDist) minPairwiseDist = d;
+      }
+    }
+
+    // Even with 24 direct folders + 15 expanded branch items + overflow badges, no two anchors stack closely
+    expect(minPairwiseDist).toBeGreaterThan(100);
+  });
 });
